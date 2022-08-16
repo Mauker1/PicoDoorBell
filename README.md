@@ -2,6 +2,8 @@
 
 Doorbell notifier powered by Raspberry Pi Pico W and Telegram.
 
+![](images/pico01.jpg)
+
 <a href='https://ko-fi.com/A623L7G' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://az743702.vo.msecnd.net/cdn/kofi1.png?v=f' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a> 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/Mauker1/PicoDoorBell/main/LICENSE)
 
@@ -31,6 +33,9 @@ If your Raspberry Pi Pico W is already flashed with MicroPython, skip to the nex
 
 - Download the latest Pico W EF2 file [here](https://micropython.org/download/rp2-pico-w/rp2-pico-w-latest.uf2) - Please note this **only** works with the Raspberry Pi Pico W. If you have the board without Wi-Fi **do not** flash it with this file.
 - Before plugging your Pico into your computer, locate and press the BOOTSEL button on the board and hold it.
+
+<img src="https://github.com/Mauker1/PicoDoorBell/blob/main/images/pico02.png" data-canonical-src="https://github.com/Mauker1/PicoDoorBell/blob/main/images/pico02.png" width="400" />
+
 - With the button still pressed, connect your device. It should mount as a mass storage device on your computer, named PI-RP2.
 - Drag and drop the EF2 file into the PI-RP2 storage. After it finishes copying, it will automatically unmount from your computer. Don't worry when it does; this is entirely normal.
 - And you're done. Your Pico W is now ready to run MicroPython code :)
@@ -88,6 +93,8 @@ For more information on any of the steps above, please refer to the official [Te
 ---
 
 When you have all the placeholders replaced inside `secrets.py`, you may run the code on Thonny. Have fun! :)
+
+![](images/pico03.PNG)
 
 ## Final details 
 
