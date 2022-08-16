@@ -3,7 +3,7 @@
 Doorbell notifier powered by Raspberry Pi Pico W and Telegram.
 
 <a href='https://ko-fi.com/A623L7G' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://az743702.vo.msecnd.net/cdn/kofi1.png?v=f' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a> 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://raw.githubusercontent.com/Mauker1/PicoDoorBell/main/LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/Mauker1/PicoDoorBell/main/LICENSE)
 
 ---
 
