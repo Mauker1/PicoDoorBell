@@ -13,6 +13,24 @@ Doorbell notifier powered by Raspberry Pi Pico W and Telegram.
 
 This project works by sending a notification through a Telegram bot. You could send it directly to your user or a group/channel.
 
+### Hardware list
+
+- 01 Raspberry Pi Pico W
+- 01 USB-C battery charger - [DEBO1 3.7LI 1.0A](https://www.reichelt.de/de/de/entwicklerboards-ladeplatine-fuer-3-7v-li-akkus-usb-c-1a-debo1-3-7li-1-0a-p291398.html) - Based on the TC4056 chipset.
+- 01 [150 mAh lipo battery](https://www.amazon.de/VinCorp-150mAh-Stecker-Empf%C3%A4nger-Quadrocopter/dp/B086B8NRQ4).
+- 01 180 ohms resistor.
+- 01 5.1 ohms resistor.
+- 01 push button for reset.
+- 01 toggle switch for power.
+- 01 [PC817 optocoupler](https://www.reichelt.de/optokoppler-fototransistorausgang-5-3-kv-ctr-100-200-dip-4-sfh-617a-3-vis-p216809.html).
+- Your doorbell :D Mine is a Ritto Twinbus 7630 indoor.
+
+DISCLAIMER: Even though this project works fine for me and with my specific doorbell, it doesn't mean it will work with any system. This project does not come with any guarantee whatsoever. If you want to implement this, do it at your own responsibility and risk.
+
+### Schematics
+
+![](images/pico04.jpg)
+
 ### Getting the code
 
 Clone this repository and make the necessary changes as stated in the following sections.
