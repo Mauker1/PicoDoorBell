@@ -29,7 +29,7 @@ DISCLAIMER: Even though this project works fine for me and with my specific door
 
 ### Schematics
 
-![](images/pico04.jpg)
+![](images/pico04.PNG)
 
 ### Getting the code
 
