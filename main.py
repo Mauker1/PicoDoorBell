@@ -47,8 +47,8 @@ ssid = secrets['ssid']
 pw = secrets['pw']
 botToken = secrets['botToken']
 chatId = secrets['telegramDmUid']
-startupText = 'Pico started!'
-text = 'Door bell activated!'
+startupText = 'I am online! Bot started!'
+text = 'Doorbell activated!'
 
 # Telegram send message URL
 sendURL = 'https://api.telegram.org/bot' + botToken + '/sendMessage'
@@ -93,7 +93,7 @@ def connect_wifi():
 connect_wifi()
 
 # Setup GPIO pins
-doorBellInput = machine.Pin(18, machine.Pin.IN, machine.Pin.PULL_DOWN)
+doorBellInput = machine.Pin(16, machine.Pin.IN, machine.Pin.PULL_DOWN)
 loopDelay = 0.25
 buttonDelay = 5
 pressed = 1
@@ -104,7 +104,7 @@ while True:
             connect_wifi()
         
         if (doorBellInput.value() == pressed):
-            print('Door bell pressed!')
+            print('Doorbell pressed!')
             send_message(chatId, text)
             time.sleep(buttonDelay)
         
