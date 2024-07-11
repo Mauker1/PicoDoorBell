@@ -9,5 +9,5 @@
 
 ## Version 1.1
 
-![](images/picoV01_1_01.jpg)
-![](images/picoV01_1_02.jpg)
+![](images/picoV01_1_01.png)
+![](images/picoV01_1_02.png)

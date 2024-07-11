@@ -32,7 +32,7 @@ This project works by sending a notification through a Telegram bot. You could s
 
 #### V 1.1 schematics
 
-![](images/schematicsV01_1.PNG)
+![](images/schematicsV01_1.png)
 
 #### Prototype schematics (With battery)
 
@@ -40,7 +40,7 @@ This project works by sending a notification through a Telegram bot. You could s
 
 ### Render
 
-![](images/picoRender.jpg)
+![](images/picoRender.png)
 
 ### Image gallery
 
@@ -48,7 +48,7 @@ Check more pictures [here.](gallery.md)
 
 ### Gerber file
 
-If you want to order your own PCB, brag the [Gerber file here.](assets/Gerber_PicoDoorbell_PCB_PicoDoorbell_2024-07-11_02.zip).
+If you want to order your own PCB, brag the [Gerber file here.](assets/Gerber_PicoDoorbell_PCB_PicoDoorbell_2024-07-11_02.zip)
 
 ### Getting the code
 
