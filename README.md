@@ -48,7 +48,7 @@ Check more pictures [here.](gallery.md)
 
 ### Gerber file
 
-If you want to order your own PCB, brag the [Gerber file here.](assets/Gerber_PicoDoorbell_PCB_PicoDoorbell_2024-07-11_02.zip)
+If you want to order your own PCB, grab the [Gerber file here.](assets/Gerber_PicoDoorbell_PCB_PicoDoorbell_2024-07-11_02.zip) You can either solder the Pico directly to this board, or add some female headers for an easy Pico swap.
 
 ### Getting the code
 
