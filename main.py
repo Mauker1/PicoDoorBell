@@ -71,7 +71,7 @@ isStartup = True
 # Time variables
 startupTime = time.ticks_ms()
 lastLogCheck = startupTime
-logCheckInterval = 30000
+logCheckInterval = 60000
 logMaxSize = 10000
 
 # Delays
