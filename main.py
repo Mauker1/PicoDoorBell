@@ -113,6 +113,13 @@ def read_message(chatId):
             print_log(chatId)
     response.close()
 
+def append_to_log(message):
+    global log
+    if (len(log) <= logMaxSize):
+        log += str(time.ticks_ms()) + ' ' + message + '\n'
+    else:
+        print('Log is full. Not appending message.')
+
 def print_log(chatId):
     global log
     print(log)
@@ -140,7 +147,7 @@ def is_wifi_connected():
         return True
 
 def connect_wifi():
-    global log, wifiData, isStartup
+    global wifiData, isStartup
     while True:
         if (is_wifi_connected()):
             blink_onboard_led(3)
@@ -148,7 +155,7 @@ def connect_wifi():
             status = wlan.ifconfig()
             print('ip = ' + status[0])
             wifiData = 'WiFi connected. IP: ' + status[0]
-            log += str(time.ticks_ms()) + ' ' + wifiData + '\n'
+            append_to_log(wifiData)
             if (isStartup):
                 send_message(chatId, startupText)
                 isStartup = False
@@ -157,7 +164,7 @@ def connect_wifi():
             break
         else:
             message = 'WiFi is disconnected. Trying to connect.'
-            log += str(time.ticks_ms()) + ' ' + message + '\n'
+            append_to_log(message)
             print(message)
             led.off()
             wlan.connect(ssid, pw)
@@ -195,7 +202,7 @@ while True:
         print(e)
         led.off()
         wlan.disconnect()
-        log += 'WiFi disconnected: ' + str(time.ticks_ms()) + ' ' + str(e) + '\n'
+        append_to_log('WiFi disconnected: ' + str(e))
         print(log)
         # Grace period.
         time.sleep(10)

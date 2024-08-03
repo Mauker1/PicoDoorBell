@@ -127,6 +127,12 @@ Now you need to get the channel ID. To do so, Go to https://api.telegram.org/bot
 
 For more information on any of the steps above, please refer to the official [Telegram Bot Documentation.](https://core.telegram.org/bots)
 
+#### Dumping the device logs
+
+To make the bot dump the device inner log, you may send a message with the command `/log` in the chat you configured your bot to send the messages. The bot queries for commands **every minute**. This will also clear the internal logs.
+
+**OBS.:** The device will store at most 10000 characters in the log, if it reaches that size, it'll stop appending new messages until the log is flushed.
+
 ---
 
 When you have all the placeholders replaced inside `secrets.py`, you may run the code on Thonny. Have fun! :)
