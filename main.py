@@ -47,17 +47,82 @@ ssid = secrets['ssid']
 pw = secrets['pw']
 botToken = secrets['botToken']
 chatId = secrets['telegramDmUid']
-startupText = 'I am online! Bot started!'
+
+# Messages
+startupText = 'I am online for the first time! Bot started!'
+reconnectText = 'I am back online! Bot reconnected!'
 text = 'Doorbell activated!'
+
+# Commands
+logCommand = "/log"
+
+# In memory log
+log = ''
+
+# Wifi connection status
+wifiData = ''
+
+# Telegram update id for offset
+updateId = 0
+
+# Flags
+isStartup = True
+
+# Time variables
+startupTime = time.ticks_ms()
+lastLogCheck = startupTime
+logCheckInterval = 30000
+logMaxSize = 10000
+
+# Delays
+loopDelay = 1
+buttonDelay = 5
+
+# Button pressed value
+pressed = 1
 
 # Telegram send message URL
 sendURL = 'https://api.telegram.org/bot' + botToken + '/sendMessage'
+
+# Telegram getUpdates URL
+getURL = 'https://api.telegram.org/bot' + botToken + '/getUpdates'
     
 # Send a telegram message to a given user id
 def send_message (chatId, message):
-    response = requests.post(sendURL + "?chat_id=" + str(chatId) + "&text=" + message)
+    param = {'chat_id': chatId, 'text': message}
+    response = requests.post(sendURL, json=param)
     # Close to avoid filling up the RAM.
     response.close()
+
+def read_message(chatId):
+    global updateId
+    url = ''
+    if (updateId != 0):
+        url = getURL + "?offset=" + str(updateId) + "?chat_id=" + str(chatId)
+    else:
+        url = getURL + "?chat_id=" + str(chatId)
+    print(url)
+    response = requests.get(url)
+    print(response.text)
+    json = response.json()
+    for result in json['result']:
+        updateId = result['update_id'] + 1
+        print(result['channel_post']['text'])
+        print(result['channel_post']['text'] == logCommand)
+        if (result['channel_post']['text'] == logCommand):
+            print_log(chatId)
+    response.close()
+
+def print_log(chatId):
+    global log
+    print(log)
+    send_message(chatId, log)
+    if (len(log) > logMaxSize):
+        reset_log()
+
+def reset_log():
+    global log, wifiData
+    log = str(time.ticks_ms()) + ' ' + wifiData + '\n'
 
 # Define blinking function for onboard LED to indicate error codes    
 def blink_onboard_led(num_blinks):
@@ -75,16 +140,25 @@ def is_wifi_connected():
         return True
 
 def connect_wifi():
+    global log, wifiData, isStartup
     while True:
         if (is_wifi_connected()):
             blink_onboard_led(3)
             led.on()
             status = wlan.ifconfig()
             print('ip = ' + status[0])
-            send_message(chatId, startupText)
+            wifiData = 'WiFi connected. IP: ' + status[0]
+            log += str(time.ticks_ms()) + ' ' + wifiData + '\n'
+            if (isStartup):
+                send_message(chatId, startupText)
+                isStartup = False
+            else:
+                send_message(chatId, reconnectText)
             break
         else:
-            print('WiFi is disconnected. Trying to connect.')
+            message = 'WiFi is disconnected. Trying to connect.'
+            log += str(time.ticks_ms()) + ' ' + message + '\n'
+            print(message)
             led.off()
             wlan.connect(ssid, pw)
             time.sleep(3)
@@ -94,9 +168,6 @@ connect_wifi()
 
 # Setup GPIO pins
 doorBellInput = machine.Pin(16, machine.Pin.IN, machine.Pin.PULL_DOWN)
-loopDelay = 0.25
-buttonDelay = 5
-pressed = 1
 
 while True:
     try:
@@ -108,12 +179,24 @@ while True:
             send_message(chatId, text)
             time.sleep(buttonDelay)
         
+        # Check for new messages
+        if (time.ticks_diff(time.ticks_ms(), lastLogCheck) > logCheckInterval):
+            print('Checking for new messages...')
+            read_message(chatId)
+            lastLogCheck = time.ticks_ms()
+        
         time.sleep(loopDelay)
         
-    except OSError as e:
+    
+    except KeyboardInterrupt:
+        print('KeyboardInterrupt')
+        break
+    except Exception as e:
         print(e)
         led.off()
         wlan.disconnect()
+        log += 'WiFi disconnected: ' + str(time.ticks_ms()) + ' ' + str(e) + '\n'
+        print(log)
         # Grace period.
         time.sleep(10)
         led.on()
