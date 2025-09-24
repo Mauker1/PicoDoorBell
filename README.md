@@ -2,9 +2,9 @@
 
 Doorbell notifier powered by Raspberry Pi Pico W and Telegram.
 
-![](images/picoV01_02.jpg)
+![](images/picoV01_1_installed.jpg)
 
-<a href='https://ko-fi.com/A623L7G' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://az743702.vo.msecnd.net/cdn/kofi1.png?v=f' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a> 
+<a href='https://ko-fi.com/A623L7G' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://az743702.vo.msecnd.net/cdn/kofi1.png?v=f' border='0' alt='Buy Me a Coffee at ko-fi.com' />![](images/ko-fi.webp)</a> 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/Mauker1/PicoDoorBell/main/LICENSE)
 
 ---
@@ -22,15 +22,15 @@ This project works by sending a notification through a Telegram bot. You could s
 - 01 toggle switch for power.
 - 01 [PC817 optocoupler](https://www.reichelt.de/optokoppler-fototransistorausgang-5-3-kv-ctr-100-200-dip-4-sfh-617a-3-vis-p216809.html).
 - Your doorbell :D Mine is a Ritto Twinbus 7630 indoor.
-- 01 USB-C battery charger - [DEBO1 3.7LI 1.0A](https://www.reichelt.de/de/de/entwicklerboards-ladeplatine-fuer-3-7v-li-akkus-usb-c-1a-debo1-3-7li-1-0a-p291398.html) - Based on the TC4056 chipset (**Optional** and not present on V1.0 and V1.1).
-- 01 [150 mAh lipo battery](https://www.amazon.de/VinCorp-150mAh-Stecker-Empf%C3%A4nger-Quadrocopter/dp/B086B8NRQ4) (**Optional** and not present on V1.0 and V1.1).
+- 01 USB-C battery charger - [DEBO1 3.7LI 1.0A](https://www.reichelt.de/de/de/entwicklerboards-ladeplatine-fuer-3-7v-li-akkus-usb-c-1a-debo1-3-7li-1-0a-p291398.html) - Based on the TC4056 chipset (**Optional** and not present on V1.0 and V1.2).
+- 01 [150 mAh lipo battery](https://www.amazon.de/VinCorp-150mAh-Stecker-Empf%C3%A4nger-Quadrocopter/dp/B086B8NRQ4) (**Optional** and not present on V1.0 and V1.2).
 
 **DISCLAIMER:** Even though this project works fine for me and with my specific doorbell, it doesn't mean it will work with any system. This project does not come with any guarantee whatsoever. If you want to implement this, do it at your own responsibility and risk.
 
 ### Schematics
 
 
-#### V 1.1 schematics
+#### V 1.2 schematics
 
 ![](images/schematicsV01_1.png)
 
@@ -42,13 +42,40 @@ This project works by sending a notification through a Telegram bot. You could s
 
 ![](images/picoRender.png)
 
+![](images/picoRender01.png)
+
+![](images/picoRender02.png)
+
 ### Image gallery
 
 Check more pictures [here.](gallery.md)
 
 ### Gerber file
 
-If you want to order your own PCB, grab the [Gerber file here.](assets/Gerber_PicoDoorbell_PCB_PicoDoorbell_2024-07-11_02.zip) You can either solder the Pico directly to this board, or add some female headers for an easy Pico swap.
+If you want to order your own PCB, first grab the desired Gerber file below:
+
+- [Regular version (Through hole resistors)](assets/Gerber_PicoDoorbell_PCB_PicoDoorbell_2024-07-11_02.zip).
+- [SMD version (Single SMD resistor)]((assets/Gerber_PicoDoorbell_PCB_PicoDoorbell_2024-07-11_02.zip)).
+
+Take a look at our sponsor below for ordering.
+
+You can either solder the Pico directly to this board, or add some female headers for an easy Pico swap.
+
+### Sponsorship
+
+![](images/pcbway.PNG)
+
+This project is sponsored by [PCBWay](https://www.pcbway.com/).
+
+PCBWay kindly sponsored this project by providing me with the manufactured boards, making it possible to release its final version.
+
+![](images/pcbway_boards.jpg)
+
+If you wish to implement this project, I highly recommend their service, as they are fast, reliable and produce high quality boards for a fair price.
+
+PCBWay works with 3D prototyping, PCB design, manufacturing and assembly, and also with CNC metal fabrication.
+
+Thank you for sponsoring this project!
 
 ### Getting the code
 
