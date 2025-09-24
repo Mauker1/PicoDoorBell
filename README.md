@@ -1,11 +1,11 @@
 # PicoDoorBell
 
-Doorbell notifier powered by Raspberry Pi Pico W and Telegram.
+Doorbell notifier powered by Raspberry Pi Pico W and Telegram. [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/Mauker1/PicoDoorBell/main/LICENSE)
 
 ![](images/picoV01_1_installed.jpg)
 
-<a href='https://ko-fi.com/A623L7G' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://az743702.vo.msecnd.net/cdn/kofi1.png?v=f' border='0' alt='Buy Me a Coffee at ko-fi.com' />![](images/ko-fi.webp)</a> 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/Mauker1/PicoDoorBell/main/LICENSE)
+<a href='https://ko-fi.com/A623L7G' target='_blank'>![](images/ko-fi.webp)</a> 
+
 
 ---
 
@@ -63,7 +63,7 @@ You can either solder the Pico directly to this board, or add some female header
 
 ### Sponsorship
 
-![](images/pcbway.PNG)
+![](images/pcbway.png)
 
 This project is sponsored by [PCBWay](https://www.pcbway.com/).
 
