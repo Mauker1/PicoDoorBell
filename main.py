@@ -29,6 +29,16 @@ import machine
 import urequests as requests
 import time
 import gc
+# MicroPython exposed these only as ujson/uos before v1.20; the fallback
+# keeps the file working on older builds and under host-side CPython.
+try:
+    import ujson as json
+except ImportError:
+    import json
+try:
+    import uos as os
+except ImportError:
+    import os
 from secrets import secrets
 
 # Set country to avoid possible errors
@@ -205,6 +215,144 @@ def print_log(chatId):
 def reset_log():
     global log, wifiData
     log = str(time.ticks_ms()) + ' ' + wifiData + '\n'
+
+####################################################################################
+# Tier 2 persistence.
+#
+# Flash endurance is about write *frequency*, not size: a 40 byte file and a
+# 4 KB file both cost one 4 KB sector erase. At ~100k cycles per sector, a
+# handful of writes per device lifetime is free and one write per minute
+# destroys a sector in about 69 days.
+#
+# THE RULE: never write flash on a timer. Only on a real state transition.
+#
+# Tier 0 (log, counters, live queue) stays in RAM and is never persisted.
+# Tier 1 (reset reason, boot count) belongs in the watchdog scratch registers.
+# Tier 3 (queue snapshots) reuses this file but writes only on rare triggers.
+####################################################################################
+
+STATE_PATH = 'state.json'
+STATE_TMP = 'state.json.tmp'
+STATE_VERSION = 1
+
+# Set False when the on-disk file was written by newer firmware, so a
+# downgraded build runs on defaults instead of clobbering it.
+stateWritable = True
+
+def default_state():
+    # Built fresh each call -- a module-level dict literal would be shared
+    # and mutated by reference.
+    return {
+        'v': STATE_VERSION,
+        'chatId': None,        # A4: overrides secrets on supergroup migration
+        'epochAnchor': None,   # C1: NTP epoch captured at last sync
+        'writes': 0,           # I3: wear counter, reported in the heartbeat
+    }
+
+def migrate_state(data):
+    """Upgrade a decoded state file to STATE_VERSION.
+
+    Returns the migrated dict, or None if the file cannot be used.
+    """
+    if not isinstance(data, dict):
+        return None
+    version = data.get('v', 0)
+    if version > STATE_VERSION:
+        # Written by a newer firmware. Do not guess at its schema and do
+        # not overwrite it -- the user may simply have rolled back.
+        return None
+    # Future migrations chain here, oldest first:
+    #   if version < 2:
+    #       data['newField'] = derive_from(data)
+    #       version = 2
+    merged = default_state()
+    for key in merged:
+        if key in data:
+            merged[key] = data[key]
+    merged['v'] = STATE_VERSION
+    return merged
+
+def load_state():
+    """Read Tier 2 state from flash. Always returns a usable dict."""
+    global stateWritable
+    # A leftover temp file means we lost power mid-write. The rename never
+    # happened, so state.json is still the last good copy; drop the scrap.
+    try:
+        os.remove(STATE_TMP)
+        append_to_log('Discarded stale ' + STATE_TMP)
+    except OSError:
+        pass
+
+    raw = None
+    try:
+        f = open(STATE_PATH, 'r')
+        try:
+            raw = json.load(f)
+        finally:
+            f.close()
+    except OSError:
+        # No state file: first boot, or nothing has ever needed persisting.
+        return default_state()
+    except ValueError:
+        append_to_log('State file corrupt, falling back to defaults')
+        return default_state()
+
+    migrated = migrate_state(raw)
+    if migrated is None:
+        stateWritable = False
+        append_to_log('State file unusable or newer than firmware; running read-only')
+        return default_state()
+    return migrated
+
+def save_state():
+    """Write Tier 2 state atomically. Returns True on success.
+
+    Writes to a temp file and renames over the target. Rename is atomic
+    under littlefs, so a power cut can never leave a half-written state
+    file -- it leaves either the old copy or the new one.
+    """
+    global state
+    if not stateWritable:
+        return False
+    state['writes'] = state.get('writes', 0) + 1
+    payload = json.dumps(state)
+    f = None
+    try:
+        f = open(STATE_TMP, 'w')
+        f.write(payload)
+        f.close()
+        f = None
+        os.rename(STATE_TMP, STATE_PATH)
+        return True
+    except OSError as e:
+        append_to_log('State save failed: ' + str(e))
+        if f is not None:
+            try:
+                f.close()
+            except Exception:
+                pass
+        try:
+            os.remove(STATE_TMP)
+        except OSError:
+            pass
+        return False
+
+def state_get(key, fallback=None):
+    return state.get(key, fallback)
+
+def state_set(key, value):
+    """Set a Tier 2 value, writing flash only if it actually changed.
+
+    The in-RAM dict mirrors what is on flash, so comparing here is the
+    read-before-write check -- an unchanged value costs no erase.
+    """
+    global state
+    if state.get(key, None) == value:
+        return False
+    state[key] = value
+    return save_state()
+
+state = load_state()
 
 # Define blinking function for onboard LED to indicate error codes    
 def blink_onboard_led(num_blinks):
