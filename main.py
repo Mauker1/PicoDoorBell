@@ -28,6 +28,7 @@ import ubinascii
 import machine
 import urequests as requests
 import time
+import gc
 from secrets import secrets
 
 # Set country to avoid possible errors
@@ -87,12 +88,86 @@ sendURL = 'https://api.telegram.org/bot' + botToken + '/sendMessage'
 # Telegram getUpdates URL
 getURL = 'https://api.telegram.org/bot' + botToken + '/getUpdates'
     
+# Request outcomes
+REQUEST_OK = 0          # 2xx, body decoded
+REQUEST_RETRY = 1       # transient (network fault or 5xx), safe to retry
+REQUEST_RATE_LIMIT = 2  # 429, honour retry_after before retrying
+REQUEST_FATAL = 3       # other 4xx, retrying will not help
+
+def classify_response(status):
+    if status <= 0:
+        # No HTTP response at all -- transient by definition.
+        return REQUEST_RETRY
+    if status >= 200 and status < 300:
+        return REQUEST_OK
+    if status == 429:
+        return REQUEST_RATE_LIMIT
+    if status >= 500:
+        return REQUEST_RETRY
+    return REQUEST_FATAL
+
+def describe_api_error(status, body):
+    # Telegram reports failures as
+    # {"ok": false, "error_code": N, "description": "..."}
+    detail = ''
+    if body is not None:
+        try:
+            detail = ' ' + str(body.get('description', ''))
+        except AttributeError:
+            detail = ''
+    return 'status=' + str(status) + detail
+
+def retry_after(body):
+    # Telegram puts the cooldown in parameters.retry_after on a 429.
+    if body is None:
+        return 0
+    try:
+        return int(body['parameters']['retry_after'])
+    except (KeyError, TypeError, ValueError):
+        return 0
+
+def do_request(method, url, payload=None):
+    """Perform an HTTP request and always release the socket.
+
+    Returns (outcome, status, body), where body is the decoded JSON
+    response or None. Never raises for network or HTTP-level failures --
+    callers branch on outcome instead.
+    """
+    response = None
+    try:
+        if method == 'POST':
+            response = requests.post(url, json=payload)
+        else:
+            response = requests.get(url)
+        status = response.status_code
+        # Decode while the socket is still open. Telegram answers JSON
+        # for errors too, so this is also how we read error details.
+        try:
+            body = response.json()
+        except (ValueError, OSError):
+            body = None
+        return (classify_response(status), status, body)
+    except OSError as e:
+        # DNS failure, refused connection, TLS failure, timeout.
+        append_to_log('HTTP ' + method + ' failed: ' + str(e))
+        return (REQUEST_RETRY, 0, None)
+    finally:
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                # Closing must never mask the real outcome.
+                pass
+        # urequests leaks sockets quickly without this on a 264 KB part.
+        gc.collect()
+
 # Send a telegram message to a given user id
 def send_message (chatId, message):
     param = {'chat_id': chatId, 'text': message}
-    response = requests.post(sendURL, json=param)
-    # Close to avoid filling up the RAM.
-    response.close()
+    outcome, status, body = do_request('POST', sendURL, param)
+    if outcome != REQUEST_OK:
+        append_to_log('sendMessage failed: ' + describe_api_error(status, body))
+    return (outcome, status, body)
 
 def read_message(chatId):
     global updateId
@@ -101,17 +176,17 @@ def read_message(chatId):
         url = getURL + "?offset=" + str(updateId) + "?chat_id=" + str(chatId)
     else:
         url = getURL + "?chat_id=" + str(chatId)
-    print(url)
-    response = requests.get(url)
-    print(response.text)
-    json = response.json()
-    for result in json['result']:
+    # NOTE: never print or log `url` -- it embeds the bot token.
+    outcome, status, body = do_request('GET', url)
+    if outcome != REQUEST_OK:
+        append_to_log('getUpdates failed: ' + describe_api_error(status, body))
+        return
+    for result in body['result']:
         updateId = result['update_id'] + 1
         print(result['channel_post']['text'])
         print(result['channel_post']['text'] == logCommand)
         if (result['channel_post']['text'] == logCommand):
             print_log(chatId)
-    response.close()
 
 def append_to_log(message):
     global log
