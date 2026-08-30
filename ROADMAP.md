@@ -26,6 +26,21 @@ recovery or a visible alert. Everything else is correctness and polish.
 | **P3** | Polish, cleanup, cosmetic. |
 | **P4** | Roadmap / future hardware. |
 
+## Status
+
+| Mark | Meaning |
+| --- | --- |
+| ✅ | Landed and tested |
+| 🔬 | Landed, awaiting hardware verification |
+| — | Not started |
+
+**Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · — C4 · — B1 · — B2 · — B6 · — C3
+
+Everything marked ✅ has host-side test coverage but has **not yet run on real
+hardware**. See [Open questions](#open-questions) for what that gates.
+
+---
+
 Categories group work by *similarity*; priorities sequence it. Work the priorities
 across categories, not the categories top to bottom. See
 [Sequencing](#sequencing) for the concrete order.
@@ -54,7 +69,7 @@ Parse as `text.strip().split()[0].split('@')[0]`, compared case-insensitively, s
 appends the bot username via autocomplete, and does so mandatorily when multiple bots are
 present. Add a small dispatch table so future commands don't mean touching the parser.
 
-### A3 — HTTP status checking — **P0**
+### ✅ A3 — HTTP status checking — **P0**
 `send_message` and `read_message` must inspect `response.status_code`.
 
 `urequests` **does not raise on 4xx** — it returns a response object with the error status.
@@ -81,7 +96,7 @@ the new ID (Tier 2, see [I1](#i1--tiered-state-model--p1)) and retry.
 
 Depends on A3, I2.
 
-### A5 — Guaranteed response cleanup — **P0**
+### ✅ A5 — Guaranteed response cleanup — **P0**
 Every request in `try/finally` with `response.close()` in the `finally`. Follow each request
 with `gc.collect()`.
 
@@ -144,7 +159,7 @@ rather than guess.
 
 A wedged cyw43 stack currently requires someone to physically power-cycle the unit.
 
-### B3 — Fully guarded boot path — **P0**
+### ✅ B3 — Fully guarded boot path — **P0**
 Configure the GPIO and IRQ **before** touching the network, and wrap the entire startup in
 exception handling.
 
@@ -231,11 +246,33 @@ alongside B1 in value.
 Keep the payload schema **extensible** so battery voltage can be added later without a
 breaking change.
 
+### C4 — Reset cause and boot counter (Tier 1) — **P1**
+Read `machine.reset_cause()` at boot, keep a boot counter in a watchdog scratch
+register, log both, and include them in the startup message and heartbeat.
+
+> **Must land before B2.** The production unit reboots intermittently — correlated with
+> switching mains loads on the same circuit — and the cause is unknown. Today every restart
+> looks identical: a startup message in Telegram. Once the watchdog exists, a wedged
+> network stack produces a reset indistinguishable from that mystery unless the cause is
+> recorded first.
+
+Distinguishes:
+
+| Cause | Meaning |
+| --- | --- |
+| `PWRON_RESET` | Supply dropped — brownout or mains dip |
+| `HARD_RESET` | RUN pin driven low — button, or transient pickup on the trace |
+| `WDT_RESET` | Firmware wedged (once B2 exists) |
+| `DEEPSLEEP_RESET` | Future battery build only |
+
+Roughly 20 lines. Converts an ongoing mystery into a dataset, and its value grows with
+uptime — so it wants to reach the production device early.
+
 ---
 
 ## D. Security
 
-### D1 — Stop leaking the bot token — **P0, trivial**
+### ✅ D1 — Stop leaking the bot token — **P0, trivial**
 Remove `print(url)` from `read_message`, or redact the token.
 
 It currently prints `https://api.telegram.org/bot<TOKEN>/getUpdates?...` on **every poll**.
@@ -248,6 +285,11 @@ flow. Add a startup check that refuses to run on unreplaced placeholders with a 
 
 The README currently instructs users to edit a **tracked** file containing their WiFi
 password and bot token.
+
+Also add a `deviceName` field. With a bench unit and a production unit running
+simultaneously against separate bots and groups, every startup message, heartbeat and log
+line needs to say which board sent it — and crossing the two `secrets.py` files either
+floods the real group or sends production alerts to a test channel nobody watches.
 
 ### D3 — Sender authorization — **P1**
 Verify incoming updates originate from the configured chat before acting on commands.
@@ -386,6 +428,12 @@ retrofit.
 Document the DM, group, supergroup and channel paths properly now that all four are
 supported. Include the supergroup migration caveat and the BotFather privacy-mode setting.
 
+### ✅ H4 — Architecture document — **P2**
+`docs/ARCHITECTURE.md` describes how the firmware works and why: the state tier model, the
+boot sequence, the HTTP request layer, the on-device file layout. Kept separate from the
+README (a build guide) and from this file (a plan). Updated alongside each commit that
+changes behaviour it describes.
+
 ### H3 — Repo hygiene — **P3**
 Tagged releases matched to PCB revisions, a CHANGELOG, and a troubleshooting section built
 from the failure modes catalogued here.
@@ -413,7 +461,7 @@ reset-surviving storage, reachable via `machine.mem32` at the watchdog base.
 
 **The one rule that matters: never write flash on a timer.** Everything else follows.
 
-### I2 — Atomic write helper — **P1**
+### ✅ I2 — Atomic write helper — **P1**
 One function, one file, one write. Serialize all Tier 2 state together, write to
 `state.tmp`, `os.rename()` over the target. Rename is atomic under littlefs, so a power cut
 mid-write cannot leave corrupt state.
@@ -438,10 +486,33 @@ section. It changes the endurance envelope by an order of magnitude.
 
 ---
 
+## J. Deployment & updates
+
+### J1 — Over-the-air updates — **P3**
+Pull firmware from a URL and self-update, via `mip` or a small self-updater reading GitHub
+raw. Needs: a version marker, an atomic swap (I2's temp-file-and-rename pattern applies
+directly), and a rollback path if the new build fails to boot.
+
+> Raised in the original review and then dropped when this roadmap was first written. It is
+> restored here because the two-device workflow makes it concretely valuable: promoting a
+> tested build currently means physically pulling the production Pico out of the entryway.
+
+Deliberately **not** in Phase 1. An OTA path that can brick the device is worse than no OTA
+path, and the rollback story depends on C4's reset-cause detection to know a new build
+failed. Sequence it after C4 and B2 are proven on hardware.
+
+---
+
 ## Sequencing
 
 ### Phase 1 — Stop the bleeding
-`D1` → `A5` → `A3` → `I2` → `B3` → `B1` → `B2` → `B6` → `C3`
+✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → `C4` → `B1` → `B2` → `B6` → `C3`
+
+**Hardware checkpoint after B3**, before B1. Everything landed so far is host-tested only,
+and B1 changes interrupt behaviour — the hardest thing to debug with unverified changes
+underneath it. B1 and B2 additionally *cannot* be validated in stubs: debounce timing
+against a real optocoupler and a watchdog timeout that must survive a real TLS handshake
+both need the bench unit.
 
 Small, surgical, no restructuring. After this the device stops losing presses and stops
 failing silently. **The bulk of the early effort belongs here.**
@@ -450,6 +521,9 @@ failing silently. **The bulk of the early effort belongs here.**
 atomic-write helper is roughly fifteen lines. Establish `I1`'s tier discipline at the same
 time — before anyone adds a second `open(..., 'w')` somewhere convenient and quietly starts
 writing on a timer.
+
+`C4` lands ahead of `B2` so that watchdog resets stay distinguishable from the existing
+unexplained reboots.
 
 ### Phase 2 — Correctness
 `A1` · `A2` · `A4` · `A6` · `A7` · `B4` · `B5` · `C1` · `D2` · `D3` · `E1` · `I1` · `H1`
@@ -465,6 +539,8 @@ The device now behaves correctly across all chat types.
 `B7` · `B8` · `C2` · `G1` · `G3` · `I3` · `E3` · `E5` · `A8` · `D4` · `F4` · `G4` · `G5` ·
 `H2` · `H3`
 
+Plus `J1`, once `C4` and `B2` are proven on hardware.
+
 Then, on future hardware: `E4` · `G2`.
 
 ### Dependency edges worth respecting
@@ -474,6 +550,9 @@ A3 ──▶ A4 ──▶ (needs I2)
 A3 ──▶ A6
 I2 ──▶ A4, B6-snapshot, I3
 B1 ──▶ E5
+C4 ──▶ B2   (reset causes must be separable before adding a new one)
+C4 ──▶ J1   (rollback needs to detect a failed boot)
+I2 ──▶ J1   (atomic swap reuses the same pattern)
 F1 ──▶ E2 ──▶ F2
 B1 ◀──▶ G3   (debounce parameters are shared)
 E2 ──▶ G5   (loop must stay swappable)
@@ -533,4 +612,33 @@ persisting state — the exact failure class this entire refactor exists to elim
   to 0–3 and verify.
 - **AC vs DC bell signal** (G3) — determines whether debounce is software pulse-coalescing
   or an RC stretcher on the opto output.
-- **BotFather privacy mode** state (D3) — determines the current crash rate in group mode.
+- **BotFather privacy mode** on *both* bots (D3) — must be set identically. A mismatch makes
+  the bench unit hit the `channel_post` crash path constantly while production looks fine,
+  or the reverse, and the difference looks like a firmware bug.
+
+### Hardware verification queue
+
+Open items for the bench unit, none yet answered:
+
+1. **MicroPython version parity** between bench and production. Reflash both if needed, then
+   record the target version in `ARCHITECTURE.md`. The `ujson`/`uos` fallback exists because
+   of the v1.20 boundary, and the littlefs assumption is version-dependent.
+2. **Prototype doorbell input pin** — confirm it is GP16. If the boards differ, that is an
+   argument for pulling `E1` forward so the pin is configuration rather than a constant.
+3. **Filesystem type** — `sys.implementation` and `os.statvfs('/')`. Settles I4 and the
+   atomic-rename claim in `ARCHITECTURE.md`.
+4. **Prototype reboot behaviour on both power modes.** The VSYS jumper allows switching
+   between battery-backed and direct-USB. Production is direct-USB with no battery, so the
+   direct-USB mode should reproduce its behaviour; a battery-backed prototype that never
+   reboots proves nothing about production, because the cell masks exactly the dips in
+   question. Run both on the same socket as production and switch the offending light.
+5. **Charger module load-sharing.** Whether the load runs from USB while charging, or hangs
+   off BAT+ with the cell charging and discharging simultaneously and held near 4.2 V.
+   Affects cell longevity and what "on battery" means as a test condition.
+6. **RUN pin pickup.** Disconnect the reset button at the *Pico* end (not the button end —
+   the lead itself is the antenna) and watch for reboots. RUN has an internal pull-up, so
+   leaving it floating is safe. On the production carrier the PCB trace remains regardless,
+   so only the protoboard can eliminate it fully. A 100 nF cap from RUN to GND close to the
+   pin is the standard mitigation if this is confirmed.
+7. **USB adapter quality on production.** A one-minute swap for a known-good supply is the
+   cheapest test of the brownout hypothesis and needs no hardware revision.
