@@ -45,19 +45,21 @@ from secrets import secrets
 rp2.country('DE')
 
 wlan = network.WLAN(network.STA_IF)
-wlan.active(True)
 
-led = machine.Pin('LED', machine.Pin.OUT)
-
-# See the MAC address in the wireless chip OTP
-mac = ubinascii.hexlify(network.WLAN().config('mac'),':').decode()
-print('mac = ' + mac)
+# Configured by setup_hardware() during boot, not at import time, so that
+# failures are catchable and the ordering is explicit.
+led = None
+doorBellInput = None
+mac = ''
 
 # Load login data from different file for safety reasons
 ssid = secrets['ssid']
 pw = secrets['pw']
 botToken = secrets['botToken']
 chatId = secrets['telegramDmUid']
+
+# GPIO wired to the optocoupler output. E1 will move this to config.py.
+doorBellPin = 16
 
 # Messages
 startupText = 'I am online for the first time! Bot started!'
@@ -249,18 +251,20 @@ def default_state():
         'writes': 0,           # I3: wear counter, reported in the heartbeat
     }
 
+def state_is_future(data):
+    """True if the file was written by firmware newer than this build."""
+    return isinstance(data, dict) and data.get('v', 0) > STATE_VERSION
+
 def migrate_state(data):
     """Upgrade a decoded state file to STATE_VERSION.
 
-    Returns the migrated dict, or None if the file cannot be used.
+    Returns the migrated dict, or None if the shape is unusable. Callers
+    treat None as 'no usable state', not as 'do not touch this file' --
+    see state_is_future() for that case.
     """
     if not isinstance(data, dict):
         return None
     version = data.get('v', 0)
-    if version > STATE_VERSION:
-        # Written by a newer firmware. Do not guess at its schema and do
-        # not overwrite it -- the user may simply have rolled back.
-        return None
     # Future migrations chain here, oldest first:
     #   if version < 2:
     #       data['newField'] = derive_from(data)
@@ -297,10 +301,19 @@ def load_state():
         append_to_log('State file corrupt, falling back to defaults')
         return default_state()
 
+    if state_is_future(raw):
+        # Written by newer firmware. Do not guess at its schema and do not
+        # overwrite it -- the user may simply have rolled back.
+        stateWritable = False
+        append_to_log('State file is newer than firmware; running read-only')
+        return default_state()
+
     migrated = migrate_state(raw)
     if migrated is None:
-        stateWritable = False
-        append_to_log('State file unusable or newer than firmware; running read-only')
+        # Structurally wrong but syntactically valid, e.g. a bare list.
+        # Nothing meaningful to preserve, so stay writable and let the
+        # next real transition overwrite it.
+        append_to_log('State file unusable, falling back to defaults')
         return default_state()
     return migrated
 
@@ -352,7 +365,132 @@ def state_set(key, value):
     state[key] = value
     return save_state()
 
-state = load_state()
+####################################################################################
+# Tier 1 persistence: watchdog scratch registers.
+#
+# 32 bytes that survive a warm reset but not a power cut, at zero flash cost.
+# That asymmetry is the point: if the magic word is still there, power was
+# never lost, which is an independent cross-check on machine.reset_cause().
+####################################################################################
+
+WATCHDOG_BASE = 0x40058000
+WATCHDOG_REASON = WATCHDOG_BASE + 0x08
+WATCHDOG_SCRATCH0 = WATCHDOG_BASE + 0x0c   # SCRATCH0..7, four bytes each
+
+# Scratch 4-7 carry the bootrom's reboot-to-BOOTSEL handshake, so stay in
+# 0-3. Using the top of that range leaves 0 and 1 alone in case the port
+# wants them.
+SCRATCH_MAGIC_IDX = 2
+SCRATCH_BOOTCOUNT_IDX = 3
+SCRATCH_MAGIC = 0x50444231   # 'PDB1'
+
+# RP2040 VREG_AND_CHIP_RESET.CHIP_RESET. Records what caused the last reset
+# in hardware, independently of what MicroPython reports.
+# UNVERIFIED: bit positions are from the datasheet but have not been
+# confirmed on a board. The raw word is logged as well, so a wrong decode
+# here cannot destroy the underlying evidence.
+CHIP_RESET = 0x40064000 + 0x08
+CHIP_RESET_HAD_POR = 1 << 8          # power-on or brown-out
+CHIP_RESET_HAD_RUN = 1 << 16         # RUN pin pulled low
+CHIP_RESET_HAD_PSM_RESTART = 1 << 20 # restart from the debug port
+
+resetInfo = None
+
+def scratch_read(index):
+    return machine.mem32[WATCHDOG_SCRATCH0 + (index * 4)]
+
+def scratch_write(index, value):
+    machine.mem32[WATCHDOG_SCRATCH0 + (index * 4)] = value & 0xFFFFFFFF
+
+def reset_cause_name(value):
+    # Which constants exist varies by port and version, so match by lookup
+    # rather than assuming any particular one is defined.
+    for name in ('PWRON_RESET', 'HARD_RESET', 'WDT_RESET',
+                 'DEEPSLEEP_RESET', 'SOFT_RESET'):
+        if getattr(machine, name, None) == value:
+            return name
+    return 'UNKNOWN_' + str(value)
+
+def decode_chip_reset(word):
+    flags = []
+    if word & CHIP_RESET_HAD_POR:
+        flags.append('POR/BOD')
+    if word & CHIP_RESET_HAD_RUN:
+        flags.append('RUN')
+    if word & CHIP_RESET_HAD_PSM_RESTART:
+        flags.append('DEBUG')
+    return flags
+
+def read_reset_info():
+    """Capture why we restarted, and how many times.
+
+    Three independent sources, because no single one is trustworthy on its
+    own for the question we are asking:
+
+      - machine.reset_cause(), the port's own interpretation
+      - CHIP_RESET, the hardware's record: separates a supply brownout
+        (POR/BOD) from the RUN pin being pulled low
+      - the scratch magic word, which survives a warm reset but not a
+        power cut, so its absence independently confirms power was lost
+
+    Never raises. Diagnostics must not be able to stop the device booting.
+    """
+    info = {
+        'cause': 'unavailable',
+        'causeRaw': None,
+        'chipReset': None,
+        'flags': [],
+        'wdtReason': None,
+        'bootCount': 0,
+        'warmBoot': False,
+    }
+    try:
+        raw = machine.reset_cause()
+        info['causeRaw'] = raw
+        info['cause'] = reset_cause_name(raw)
+    except Exception:
+        pass
+    try:
+        word = machine.mem32[CHIP_RESET]
+        info['chipReset'] = word
+        info['flags'] = decode_chip_reset(word)
+    except Exception:
+        pass
+    try:
+        info['wdtReason'] = machine.mem32[WATCHDOG_REASON]
+    except Exception:
+        pass
+    try:
+        if scratch_read(SCRATCH_MAGIC_IDX) == SCRATCH_MAGIC:
+            # Magic intact: the registers kept their contents, so this was
+            # a warm reset rather than a power cycle.
+            info['warmBoot'] = True
+            info['bootCount'] = scratch_read(SCRATCH_BOOTCOUNT_IDX) + 1
+        else:
+            info['bootCount'] = 1
+            scratch_write(SCRATCH_MAGIC_IDX, SCRATCH_MAGIC)
+        scratch_write(SCRATCH_BOOTCOUNT_IDX, info['bootCount'])
+    except Exception:
+        pass
+    return info
+
+def format_reset_info(info):
+    if info is None:
+        return 'Reset info unavailable'
+    parts = ['boot #' + str(info['bootCount']), 'cause=' + str(info['cause'])]
+    if info['flags']:
+        parts.append('chip=' + '+'.join(info['flags']))
+    if info['chipReset'] is not None:
+        parts.append('raw=0x%08x' % info['chipReset'])
+    if info['wdtReason']:
+        parts.append('wdt=0x%x' % info['wdtReason'])
+    parts.append('warm' if info['warmBoot'] else 'cold')
+    return 'Reset: ' + ' '.join(parts)
+
+# Populated for real by boot(). Defined here so state_get/state_set always
+# have a dict to work with, without touching flash at import time.
+state = default_state()
+
 
 # Define blinking function for onboard LED to indicate error codes    
 def blink_onboard_led(num_blinks):
@@ -370,7 +508,15 @@ def is_wifi_connected():
         return True
 
 def connect_wifi():
-    global wifiData, isStartup
+    """Bring the WiFi link up. Connection only -- no notifications.
+
+    Callers decide whether to announce; mixing the two made a transport
+    failure look like a connection failure.
+
+    NOTE: still loops until connected. B4 adds the timeout, backoff and
+    status interpretation.
+    """
+    global wifiData
     while True:
         if (is_wifi_connected()):
             blink_onboard_led(3)
@@ -379,12 +525,7 @@ def connect_wifi():
             print('ip = ' + status[0])
             wifiData = 'WiFi connected. IP: ' + status[0]
             append_to_log(wifiData)
-            if (isStartup):
-                send_message(chatId, startupText)
-                isStartup = False
-            else:
-                send_message(chatId, reconnectText)
-            break
+            return True
         else:
             message = 'WiFi is disconnected. Trying to connect.'
             append_to_log(message)
@@ -393,16 +534,109 @@ def connect_wifi():
             wlan.connect(ssid, pw)
             time.sleep(3)
 
-# Connect to WiFi
-connect_wifi()
+def announce_startup():
+    """Tell the chat we are up. Best effort -- never fatal.
 
-# Setup GPIO pins
-doorBellInput = machine.Pin(16, machine.Pin.IN, machine.Pin.PULL_DOWN)
+    Sending this used to live inside connect_wifi(), where a failure --
+    typically DNS not yet ready straight after association -- killed the
+    boot before the doorbell input was ever configured.
+    """
+    global isStartup
+    # Carry the reset diagnosis into the chat. The reboots we are chasing
+    # happen on the production unit, not the bench, so the message is the
+    # only place the evidence reliably surfaces.
+    detail = '\n' + format_reset_info(resetInfo)
+    if (isStartup):
+        outcome, status, body = send_message(chatId, startupText + detail)
+        isStartup = False
+    else:
+        outcome, status, body = send_message(chatId, reconnectText + detail)
+    return outcome == REQUEST_OK
+
+def setup_hardware():
+    """Configure the pins. Must happen before anything network-related.
+
+    wlan.active(True) lives here because on the Pico W the onboard LED
+    hangs off the CYW43 chip -- machine.Pin('LED') is unusable until the
+    wireless interface is powered up.
+    """
+    global led, doorBellInput, mac
+    wlan.active(True)
+    led = machine.Pin('LED', machine.Pin.OUT)
+    doorBellInput = machine.Pin(doorBellPin, machine.Pin.IN, machine.Pin.PULL_DOWN)
+    # MAC lives in the wireless chip OTP. Read it from the interface we
+    # already have rather than constructing a second WLAN object.
+    mac = ubinascii.hexlify(wlan.config('mac'), ':').decode()
+    print('mac = ' + mac)
+    print('Doorbell input ready on GP' + str(doorBellPin))
+
+def error_halt(message):
+    """Signal an unrecoverable setup fault on the LED.
+
+    Reached only when the board cannot be configured at all, which in
+    practice means a bad pin number. A human has to fix it, so blink
+    rather than reset. B2 will let the watchdog escalate this.
+    """
+    print('FATAL: ' + message)
+    while True:
+        try:
+            if led is not None:
+                led.on()
+                time.sleep(.08)
+                led.off()
+                time.sleep(.08)
+            else:
+                time.sleep(1)
+        except Exception:
+            time.sleep(1)
+
+def boot():
+    """Bring the device up, hardware first.
+
+    Ordering is the whole point. Previously connect_wifi() ran at module
+    scope, outside any try, and sent the startup message immediately after
+    association -- exactly when DNS is least likely to be ready. If that
+    send raised, the script died before machine.Pin(16) was ever reached
+    and the doorbell was dead until someone power-cycled it.
+
+    Now: pins, then flash, then network. Only the first is fatal.
+    """
+    global state, resetInfo
+    # First, before anything can fail. The scratch registers are volatile
+    # and a later crash would take the evidence with it.
+    resetInfo = read_reset_info()
+    summary = format_reset_info(resetInfo)
+    print(summary)
+    append_to_log(summary)
+
+    try:
+        setup_hardware()
+    except Exception as e:
+        # No usable input pin means there is nothing to do.
+        error_halt('could not configure hardware: ' + str(e))
+
+    try:
+        state = load_state()
+    except Exception as e:
+        state = default_state()
+        append_to_log('State load failed, using defaults: ' + str(e))
+        print('State load failed, using defaults: ' + str(e))
+
+    try:
+        connect_wifi()
+        announce_startup()
+    except Exception as e:
+        # Network trouble is the main loop's problem, not a boot failure.
+        append_to_log('Startup networking failed: ' + str(e))
+        print('Startup networking failed: ' + str(e))
+
+boot()
 
 while True:
     try:
         if (not is_wifi_connected()):
             connect_wifi()
+            announce_startup()
         
         if (doorBellInput.value() == pressed):
             print('Doorbell pressed!')

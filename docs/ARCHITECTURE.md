@@ -29,7 +29,7 @@ all, and getting it wrong destroys hardware.
 | Tier | Medium | Survives | Cost per write | Contents |
 | --- | --- | --- | --- | --- |
 | **0** | RAM | nothing | free | Rolling log, alert counters, live event queue |
-| **1** | Watchdog scratch registers | soft reset, watchdog reset (**not** power loss) | free | Reset reason, boot count, crash code |
+| **1** | Watchdog scratch registers | warm reset (**not** power loss) | free | Magic word, boot count |
 | **2** | Flash — `state.json` | everything | one 4 KB sector erase | `chatId`, `epochAnchor`, `writes` |
 | **3** | Flash — `state.json` | everything | one 4 KB sector erase | Queue snapshot, written only on rare triggers |
 
@@ -173,7 +173,56 @@ alone.
 
 ---
 
-## HTTP request layer
+## Boot sequence
+
+`boot()` runs three stages in a fixed order. Only the first is fatal.
+
+| Stage | Function | On failure |
+| --- | --- | --- |
+| 0. Diagnosis | `read_reset_info()` | Cannot fail; every read is guarded |
+| 1. Hardware | `setup_hardware()` | `error_halt()` — fast LED blink, forever |
+| 2. Flash | `load_state()` | Log, fall back to defaults, continue |
+| 3. Network | `connect_wifi()` + `announce_startup()` | Log, continue; the main loop retries |
+
+### Why the order matters
+
+Previously `connect_wifi()` ran at module scope, outside any `try`, and sent the
+startup message immediately after association — precisely when DNS is least
+likely to be ready. If that send raised, the script died before
+`machine.Pin(16)` was ever reached. The doorbell input was never configured and
+the device was dead until someone power-cycled it, with no watchdog to notice.
+
+Configuring pins first means a network problem can never stop the board from
+watching the button. Once B1 lands, presses arriving during a network outage
+are latched by the IRQ and delivered when the link returns.
+
+### Fatal versus recoverable
+
+Only stage 1 is fatal, and in practice it fails only on a bad pin number — a
+configuration error a human must fix. `error_halt()` therefore blinks rather
+than resetting: a reset loop would hide the fault. When B2 adds the watchdog,
+this becomes a deliberate escalation point.
+
+Stages 2 and 3 are recoverable by construction. Missing or unusable state falls
+back to defaults; missing network is the main loop's problem.
+
+### `wlan.active(True)` lives in `setup_hardware()`
+
+Not an accident of ordering. On the Pico W the onboard LED hangs off the CYW43
+wireless chip, so `machine.Pin('LED')` is unusable until the interface is
+powered up. Hardware setup therefore has to activate the interface even though
+connecting is a later stage.
+
+### Connection and notification are separate
+
+`connect_wifi()` connects. `announce_startup()` notifies. They used to be one
+function, which meant a transport failure looked like a connection failure and
+took the boot down with it. Callers now decide whether to announce — the main
+loop does so after a reconnect, `boot()` after the first connect.
+
+---
+
+
 
 All network calls go through one function. This is an enforced invariant, not a
 convention: `requests.*` appears nowhere else in the codebase, and the response
@@ -237,8 +286,19 @@ filesystem: 30 assertions covering first boot, write suppression, reboot
 persistence, corrupt and non-dict payloads, newer-version files, stale temp
 files and partial schemas. It runs under CPython with no board attached.
 
-It works by extracting the state functions from `main.py` via AST and running
-them in a synthetic namespace — possible only because those functions depend on
-nothing but `json` and `os`. **This is temporary scaffolding.** Once the
-persistence layer moves into its own module, the file should be rewritten as a
-plain import.
+`tests/test_reset.py` covers reset-cause capture: cold versus warm boot, the
+counter surviving a warm reset and restarting after a power cut, watchdog
+identification, unknown cause codes, and — most importantly — that a brownout
+and RUN-pin pickup produce visibly different output. 27 assertions.
+
+`tests/test_boot.py` runs `main.py` under stub hardware modules and asserts the
+boot ordering: that the doorbell pin is configured before any network call, and
+that a failing startup send no longer prevents it. The baseline firmware fails
+this test — it dies with `OSError` and never reaches `machine.Pin(16)`.
+
+Both files work by extracting code from `main.py` via AST and running it in a
+synthetic namespace — possible only because those functions depend on
+nothing but `json` and `os`, and because the trailing `while True:` loop can be
+stripped from the tree before executing it. **This is temporary scaffolding.**
+Once the code is split into modules, both files should be rewritten as plain
+imports.

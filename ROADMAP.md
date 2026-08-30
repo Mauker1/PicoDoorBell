@@ -34,7 +34,7 @@ recovery or a visible alert. Everything else is correctness and polish.
 | 🔬 | Landed, awaiting hardware verification |
 | — | Not started |
 
-**Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · — C4 · — B1 · — B2 · — B6 · — C3
+**Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · — B1 · — B2 · — B6 · — C3
 
 Everything marked ✅ has host-side test coverage but has **not yet run on real
 hardware**. See [Open questions](#open-questions) for what that gates.
@@ -246,7 +246,7 @@ alongside B1 in value.
 Keep the payload schema **extensible** so battery voltage can be added later without a
 breaking change.
 
-### C4 — Reset cause and boot counter (Tier 1) — **P1**
+### ✅ C4 — Reset cause and boot counter (Tier 1) — **P1**
 Read `machine.reset_cause()` at boot, keep a boot counter in a watchdog scratch
 register, log both, and include them in the startup message and heartbeat.
 
@@ -506,7 +506,7 @@ failed. Sequence it after C4 and B2 are proven on hardware.
 ## Sequencing
 
 ### Phase 1 — Stop the bleeding
-✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → `C4` → `B1` → `B2` → `B6` → `C3`
+✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → ✅ `C4` → `B1` → `B2` → `B6` → `C3`
 
 **Hardware checkpoint after B3**, before B1. Everything landed so far is host-tested only,
 and B1 changes interrupt behaviour — the hardest thing to debug with unverified changes
