@@ -34,6 +34,36 @@ recovery or a visible alert. Everything else is correctness and polish.
 | 🔬 | Landed, awaiting hardware verification |
 | — | Not started |
 
+### 🚀 Promoted to production
+
+The production unit is running the C5 build: `Doorbell input ready on GP16`, startup message
+delivered to the production group, `state.json` written at the 60 s gate. MAC
+`d8:3a:dd:af:cc:82`, distinct from the bench unit, so the two are not confusable.
+
+**Discard `boot #1` from the dataset.** It reported `verdict=power` on a Thonny soft reboot,
+which is the documented first-run ambiguity: the magic word had never been written, so `cold`
+was inevitable, and `CHIP_RESET` still held `POR/BOD` from the last time the board was
+powered. Affects only the first boot after a flash. **The reboot dataset starts at boot #2.**
+
+✅ **Both remaining steps done.** A real ring delivered in about 2 s, matching the bench, and
+the RUN cable is reconnected.
+
+✅ **Positive control established.** Re-plugging the reset connector produced
+`verdict=run-pin chip=RUN raw=0x00010000` on the production board. The register map works on
+this unit, not just the bench one, and the instrument is now calibrated against a known
+input: **if the spontaneous reboots come through the RUN line, they will say so.**
+
+This supersedes the elimination approach entirely. The earlier plan — disconnect the cable,
+wait, interpret silence — was weak precisely because no fault could be demonstrated in the
+known-bad configuration. Detection replaces it: one labelled event is now enough.
+
+The re-plug itself remains a calibration event, not a data point. Connector travel is
+mechanical and does not occur in service (queue item 7).
+
+Note that production runs the **C5 build, not B1** — it still polls the input with the 5 s
+blocking sleep. B1 goes through the same bench-then-promote cycle. The reboot data is
+unaffected either way.
+
 ### Bench validation complete — cleared for production
 
 Verified end to end on the bench unit at v1.23.0: boot ordering, reset diagnosis across all
@@ -65,7 +95,7 @@ Known cosmetic issues, not faults: the "first time" wording above the boot count
 spurious reconnect messages if anyone posts in the group, since `/log` parsing is
 `channel_post`-only until A1.
 
-**Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · ✅ C5 · — B1 · — B2 · — B6 · — C3
+**Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · ✅ C5 · 🔬 B1 · — B2 · — B6 · — C3
 
 Everything marked ✅ has host-side test coverage but has **not yet run on real
 hardware**. See [Open questions](#open-questions) for what that gates.
@@ -168,7 +198,7 @@ accept it and Telegram silently ignores it.
 
 ## B. Reliability
 
-### B1 — IRQ-driven doorbell input — **P0**
+### ✅ B1 — IRQ-driven doorbell input — **P0, awaiting hardware test**
 **The headline fix.** `Pin.irq(trigger=IRQ_RISING)` sets a latch flag; the main loop only
 drains it.
 
@@ -222,11 +252,21 @@ the count in the heartbeat (C3).
 `machine.WDT`, fed from the main loop. Timeout must accommodate **both** a slow TLS
 handshake (~8 s) **and** a worst-case flash sector erase.
 
-> **Constraint:** the RP2040 watchdog maxes out at roughly **8.3 s**. That is tight against
-> a TLS handshake plus an erase, so this needs *measured* numbers, not a comfortable margin.
-> Time a real `sendMessage` round trip on the bench before choosing a value. If the
-> measurement leaves no headroom, the watchdog has to be fed from inside the request path
-> rather than only at the top of the loop.
+> ✅ **Measured: 1–2 s per Telegram round trip** on the bench unit, detection to delivery.
+> Healthy on its own, but the RP2040 watchdog ceiling is roughly **8.3 s** and the current
+> loop can exceed that in one iteration:
+>
+> | Step | Worst case |
+> | --- | --- |
+> | `send_message` after a press | 2 s |
+> | `time.sleep(buttonDelay)` | 5 s |
+> | `read_message` on the 60 s tick | 2 s |
+> | **Total with no feed** | **~9 s** |
+>
+> **B1 is therefore a hard prerequisite, not a preference.** It replaces the blocking 5 s
+> sleep with a timestamp lockout, removing the bulk of the exposure. The watchdog should
+> also be fed inside `do_request`, so a slow handshake cannot trip it either. Feeding only
+> at the top of the loop would reset the device during ordinary operation.
 
 A wedged cyw43 stack currently requires someone to physically power-cycle the unit.
 
@@ -326,6 +366,13 @@ against ~100,000 cycles.
 
 ⚠️ **Boot loops are the hazard.** Resetting every five seconds would be 17,000 writes a day
 and a dead sector within a week: the "never write on a timer" rule violated by accident.
+
+> ✅ **Validated on hardware.** A power-on boot that was soft-rebooted before 60 s was not
+> recorded: `boots` stayed at 2, the next attempt reported `boot #3` again, and
+> `unstable=2` counted both. Unstable boots neither inflate the total nor disappear.
+>
+> Note the consequence: **the boot number is provisional until the gate fires.** Repeated
+> failures all show the same number with a climbing `unstable` count.
 
 **Guard:** persist only once the device has been up for **60 seconds**. A boot loop crashes
 before that and never writes; a genuine reboot writes once. This also improves what the
@@ -842,7 +889,7 @@ Nothing to do until the upgrade happens; recorded so it is not rediscovered late
 ## Sequencing
 
 ### Phase 1 — Stop the bleeding
-✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → ✅ `C4` → ✅ `C5` → `B1` → `B2` → `B6` → `C3`
+✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → ✅ `C4` → ✅ `C5` → 🔬 `B1` → `B2` → `B6` → `C3`
 
 **Hardware checkpoint after B3**, before B1. Everything landed so far is host-tested only,
 and B1 changes interrupt behaviour — the hardest thing to debug with unverified changes
@@ -1049,6 +1096,10 @@ Open items for the bench unit, none yet answered:
    contaminated switch can close spontaneously without mechanical provocation, which the
    knock testing would not have revealed. Bisect by lifting the on-board button if C4
    reports `chip=RUN`.
+
+   ✅ **Superseded by detection.** With C4 on production and a RUN reset confirmed to report
+   `chip=RUN` there, the question is answered by the next labelled reboot rather than by
+   elimination. The cable stays connected. Retained below for context.
 
    **No positive control.** Deliberate attempts to provoke a reboot by switching the light,
    with the cable *connected*, produced nothing. An elimination test needs the fault to be

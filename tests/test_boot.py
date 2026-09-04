@@ -37,10 +37,18 @@ class Pin:
     IN = 'IN'
     OUT = 'OUT'
     PULL_DOWN = 'PULL_DOWN'
+    IRQ_RISING = 1
+    IRQ_FALLING = 2
 
     def __init__(self, ident, mode=None, pull=None):
         self.ident = ident
+        self.handler = None
+        self._level = 0
         events.append('pin_%s' % ident)
+
+    def irq(self, handler=None, trigger=None):
+        self.handler = handler
+        self.trigger = trigger
 
     def on(self):
         pass
@@ -48,8 +56,16 @@ class Pin:
     def off(self):
         pass
 
-    def value(self):
-        return 0
+    def value(self, level=None):
+        if level is None:
+            return self._level
+        self._level = level
+
+    def edge(self, level):
+        """Drive the pin and fire its interrupt, as the hardware would."""
+        self._level = level
+        if self.handler is not None:
+            self.handler(self)
 
 
 class WLAN:
@@ -122,8 +138,11 @@ class Requests:
 machine_reset_cause = [1]   # PWRON_RESET by default
 
 
+clock = [0]
+
+
 def _ticks_ms():
-    return 0
+    return clock[0]
 
 
 def _ticks_diff(a, b):

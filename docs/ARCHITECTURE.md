@@ -8,6 +8,23 @@ setup — and should stay free of internals.
 
 ---
 
+## Measured baselines
+
+From the bench unit at v1.23.0, after boot with WiFi connected:
+
+| Measurement | Value |
+| --- | --- |
+| `gc.mem_free()` | 178,480 bytes |
+| Filesystem | 4096-byte blocks, 212 total, 202 free (~830 KB free) |
+| Ring signal (terminal 04) | Idle at ground, 5 V DC for ~2 s, clean square wave |
+| Telegram round trip | 1–2 s, detection to delivery |
+
+The memory figure is the reference for the leak watch: `do_request` closes every
+socket in a `finally` and collects afterwards, and the proof that this is
+sufficient is free memory staying flat over days rather than any single reading.
+
+---
+
 ## Target platform
 
 | | Production | Bench |
@@ -209,9 +226,13 @@ A stale `state.json.tmp` found at boot means power was lost mid-write. The
 rename never happened, so `state.json` is still the last good copy; the scrap
 is discarded and logged.
 
-> **Caveat:** this guarantee is littlefs-specific. If the build turns out to use
-> FAT, rename is not power-fail atomic. Verifying the filesystem is an open item
-> in `ROADMAP.md` (I4).
+> **Filesystem confirmed.** `os.statvfs('/')` on the bench unit at v1.23.0 returns
+> 4096-byte blocks, 212 total, 202 free — a block size matching the flash sector,
+> characteristic of littlefs2, which the rp2 port has defaulted to for many
+> releases. The atomic-rename guarantee holds.
+>
+> Strong inference rather than proof. The decisive test, if ever needed, is case
+> sensitivity: littlefs distinguishes `AAA` from `aaa`, FAT does not.
 
 ### Failure policy
 
@@ -427,6 +448,12 @@ them, costs nothing, and is cleared when a boot proves stable. A summary reading
 `boot #47 unstable=5` says the device has come up cleanly 47 times and has failed
 5 times since the last of them.
 
+**The number is provisional until the gate fires.** A boot that never reaches 60
+seconds is never recorded, so the next attempt claims the same number again, with
+`unstable` climbing. Observed on the bench: a power-on boot soft-rebooted early
+left `boots` at 2, and both attempts reported `boot #3`, the second with
+`unstable=2`.
+
 ### Verdicts
 
 | Verdict | Condition | Meaning |
@@ -470,6 +497,66 @@ indistinguishable from the existing mystery unless the cause is recorded first.
 function returns a fully-populated dict regardless. Diagnostics must not be able
 to stop the device booting; a board that will not start is worse than one that
 cannot explain why it restarted.
+
+---
+
+## Doorbell input
+
+The input is latched by interrupt. The main loop never reads the pin to decide
+whether a ring happened; it only drains what the interrupt already recorded.
+
+### Why polling failed
+
+The old loop read the pin once a second, but the same loop made blocking TLS
+calls of one to two seconds and slept five seconds after every press. A ring
+landing in one of those windows was lost, and lost **silently** — the physical
+chime still sounds, so nobody can report a notification that never arrived.
+
+### Both edges, on purpose
+
+The handler watches rising *and* falling edges, so the pulse width is recorded in
+hardware.
+
+The obvious alternative — latch the rising edge, then re-read the pin a moment
+later to confirm it is still high — fails in exactly the case that matters. If
+the loop was blocked in a handshake for four seconds, the 2 s pulse is long over
+and the pin is back at ground. A real ring would be discarded as noise. Capturing
+the falling edge means the width is known however late the loop gets there.
+
+### Interrupt discipline
+
+The handler stamps two integers and returns. No allocation, no I/O, no logging —
+MicroPython forbids allocation in an ISR. Input records are plain lists built once
+at setup, because assigning to an existing list slot allocates nothing.
+
+### Timings
+
+| Constant | Value | Job |
+| --- | --- | --- |
+| `DEBOUNCE_MS` | 50 | Ignore contact and optocoupler noise |
+| `MIN_PULSE_MS` | 150 | Below this it is a transient, not a visitor |
+| `ALERT_LOCKOUT_MS` | 5000 | One alert per ring; must exceed the 2 s pulse |
+| `STUCK_INPUT_MS` | 15000 | Held high this long is a fault, not a caller |
+
+The old code used a single five-second `sleep` for all four jobs. They are
+separate concerns with different right answers, and the sleep was also what
+blocked the loop.
+
+`MIN_PULSE_MS` earns its place beyond noise rejection: the reboot investigation
+has not ruled out EMI coupling into this installation, and a bare edge trigger
+would turn an injected transient into a phantom notification.
+
+### Counting what polling would have lost
+
+A missed ring is unobservable, so the firmware counts the cases instead. When a
+pulse falls entirely between two passes of the main loop, no poll could have seen
+it, and `IN_MISSED` increments. Reported in the heartbeat, this replaces an
+estimate with a measurement.
+
+### One input, structured for two
+
+`inputs` is a list of records and G9 would add an entry, not a rewrite — but only
+the doorbell is wired today.
 
 ---
 
