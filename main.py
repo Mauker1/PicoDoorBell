@@ -116,10 +116,56 @@ logMaxSize = 10000
 
 # Delays
 loopDelay = 1
-buttonDelay = 5
 
-# Button pressed value
+####################################################################################
+# B1 input timings. The old code used one 5 s sleep for three different jobs --
+# debounce, one-alert-per-ring, and an accidental rate limit. They are separate
+# concerns with different right answers, so they are separate constants.
+####################################################################################
+
+# Ignore further edges this soon after one. Contact and optocoupler noise only.
+DEBOUNCE_MS = 50
+# A real ring holds terminal 04 high for about 2 s (measured). Anything
+# shorter than this is a transient, not a visitor.
+MIN_PULSE_MS = 150
+# One alert per ring. Must exceed the pulse width so a single ring cannot
+# produce two notifications.
+ALERT_LOCKOUT_MS = 5000
+# Held high far longer than any real ring: a fault, not a caller.
+STUCK_INPUT_MS = 15000
+
+# Button pressed value. Idle is ground, a ring drives 5 V through the
+# optocoupler, so a press is a rising edge.
 pressed = 1
+
+####################################################################################
+# Latched inputs.
+#
+# Records are plain lists, allocated once at setup. Interrupt handlers may not
+# allocate under MicroPython, and assigning to an existing list slot does not.
+# The list-of-records shape is also what lets a second input (G9, telling the
+# building entrance from the flat door) become another entry rather than a
+# rewrite -- though only one is wired today.
+####################################################################################
+
+IN_NAME = 0        # for log lines
+IN_PIN = 1         # machine.Pin
+IN_RISE = 2        # ticks_ms of the pending rising edge
+IN_FALL = 3        # ticks_ms of the falling edge that closed it
+IN_PENDING = 4     # a rising edge is waiting to be processed
+IN_COMPLETE = 5    # its falling edge has arrived, so the width is known
+IN_LAST_EDGE = 6   # debounce reference
+IN_LAST_ALERT = 7  # lockout reference
+IN_RINGS = 8       # accepted
+IN_REJECTED = 9    # too short to be real
+IN_MISSED = 10     # would have been lost by the old polling loop
+IN_FIELDS = 11
+
+inputs = []
+# Start of the current main-loop pass, and of the one before it. Used to work
+# out whether a ring landed in a window where polling could not have seen it.
+lastPassTicks = 0
+prevPassTicks = 0
 
 # Telegram send message URL
 sendURL = 'https://api.telegram.org/bot' + botToken + '/sendMessage'
@@ -641,6 +687,112 @@ def announce_startup():
         outcome, status, body = send_message(chatId, reconnectText + detail)
     return outcome == REQUEST_OK
 
+def make_edge_handler(entry):
+    """Build the interrupt handler for one input.
+
+    The closure is created once at setup; calling it allocates nothing,
+    which is the requirement for a MicroPython ISR. It does no I/O, no
+    string work and no logging -- it stamps two integers and returns.
+
+    Both edges are watched deliberately. Capturing the falling edge in
+    hardware means the pulse width is known exactly, even if the main loop
+    was blocked in a TLS handshake for several seconds and only gets to
+    look afterwards. Validating by re-reading the pin instead would have
+    failed in precisely that case: the pulse would be long over, the pin
+    back at ground, and a real ring discarded as noise.
+    """
+    def handler(pin):
+        now = time.ticks_ms()
+        if time.ticks_diff(now, entry[IN_LAST_EDGE]) < DEBOUNCE_MS:
+            return
+        entry[IN_LAST_EDGE] = now
+        if pin.value() == pressed:
+            entry[IN_RISE] = now
+            entry[IN_COMPLETE] = False
+            entry[IN_PENDING] = True
+        elif entry[IN_PENDING]:
+            entry[IN_FALL] = now
+            entry[IN_COMPLETE] = True
+    return handler
+
+def add_input(name, pinNumber):
+    """Register a latched input and arm its interrupt."""
+    pin = machine.Pin(pinNumber, machine.Pin.IN, machine.Pin.PULL_DOWN)
+    entry = [0] * IN_FIELDS
+    entry[IN_NAME] = name
+    entry[IN_PIN] = pin
+    entry[IN_PENDING] = False
+    entry[IN_COMPLETE] = False
+    inputs.append(entry)
+    pin.irq(handler=make_edge_handler(entry),
+            trigger=machine.Pin.IRQ_RISING | machine.Pin.IRQ_FALLING)
+    print(name + ' input ready on GP' + str(pinNumber))
+    return entry
+
+def was_unpollable(entry):
+    """Would the old polling loop have missed this ring?
+
+    True when the whole pulse fell between two passes of the main loop, so
+    no poll could have observed it. Counted rather than acted upon: it
+    turns 'we might have been dropping rings' into a number.
+    """
+    if not entry[IN_COMPLETE]:
+        return False
+    return (time.ticks_diff(entry[IN_RISE], prevPassTicks) > 0 and
+            time.ticks_diff(lastPassTicks, entry[IN_FALL]) > 0)
+
+def process_input(entry):
+    """Decide what a latched edge was, and act on it."""
+    now = time.ticks_ms()
+    width = None
+    if entry[IN_COMPLETE]:
+        width = time.ticks_diff(entry[IN_FALL], entry[IN_RISE])
+    elif time.ticks_diff(now, entry[IN_RISE]) > STUCK_INPUT_MS:
+        # Still high long after any real ring would have ended.
+        entry[IN_PENDING] = False
+        append_to_log(entry[IN_NAME] + ' input stuck high')
+        return
+    else:
+        # Mid-pulse. Leave it latched and look again next pass.
+        return
+
+    entry[IN_PENDING] = False
+
+    if width < MIN_PULSE_MS:
+        entry[IN_REJECTED] += 1
+        append_to_log(entry[IN_NAME] + ' transient ignored, ' +
+                      str(width) + 'ms')
+        return
+
+    if was_unpollable(entry):
+        entry[IN_MISSED] += 1
+
+    if (entry[IN_RINGS] > 0 and
+            time.ticks_diff(now, entry[IN_LAST_ALERT]) < ALERT_LOCKOUT_MS):
+        # Same ring, or an impatient second press. One alert is enough.
+        return
+
+    entry[IN_RINGS] += 1
+    entry[IN_LAST_ALERT] = now
+    print('Doorbell pressed!')
+    append_to_log(entry[IN_NAME] + ' ring, ' + str(width) + 'ms')
+    send_message(chatId, text)
+
+def poll_inputs():
+    for entry in inputs:
+        if entry[IN_PENDING]:
+            process_input(entry)
+
+def input_summary():
+    """One line per input, for the heartbeat (C3)."""
+    parts = []
+    for entry in inputs:
+        parts.append(entry[IN_NAME] + ': ' + str(entry[IN_RINGS]) +
+                     ' rings, ' + str(entry[IN_REJECTED]) +
+                     ' transients, ' + str(entry[IN_MISSED]) +
+                     ' unpollable')
+    return '; '.join(parts)
+
 def setup_hardware():
     """Configure the pins. Must happen before anything network-related.
 
@@ -651,12 +803,11 @@ def setup_hardware():
     global led, doorBellInput, mac
     wlan.active(True)
     led = machine.Pin('LED', machine.Pin.OUT)
-    doorBellInput = machine.Pin(doorBellPin, machine.Pin.IN, machine.Pin.PULL_DOWN)
+    doorBellInput = add_input('Doorbell', doorBellPin)[IN_PIN]
     # MAC lives in the wireless chip OTP. Read it from the interface we
     # already have rather than constructing a second WLAN object.
     mac = ubinascii.hexlify(wlan.config('mac'), ':').decode()
     print('mac = ' + mac)
-    print('Doorbell input ready on GP' + str(doorBellPin))
 
 def error_halt(message):
     """Signal an unrecoverable setup fault on the LED.
@@ -768,10 +919,7 @@ while True:
             connect_wifi()
             announce_startup()
         
-        if (doorBellInput.value() == pressed):
-            print('Doorbell pressed!')
-            send_message(chatId, text)
-            time.sleep(buttonDelay)
+        poll_inputs()
         
         # Check for new messages
         if (time.ticks_diff(time.ticks_ms(), lastLogCheck) > logCheckInterval):
@@ -780,6 +928,11 @@ while True:
             lastLogCheck = time.ticks_ms()
         
         mark_boot_stable()
+
+        # Record when this pass ran, so was_unpollable() can tell whether a
+        # ring landed in a gap the old polling loop could not have covered.
+        prevPassTicks = lastPassTicks
+        lastPassTicks = time.ticks_ms()
 
         time.sleep(loopDelay)
         
