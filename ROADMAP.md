@@ -34,7 +34,7 @@ recovery or a visible alert. Everything else is correctness and polish.
 | 🔬 | Landed, awaiting hardware verification |
 | — | Not started |
 
-**Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · — B1 · — B2 · — B6 · — C3
+**Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · ✅ C5 · — B1 · — B2 · — B6 · — C3
 
 Everything marked ✅ has host-side test coverage but has **not yet run on real
 hardware**. See [Open questions](#open-questions) for what that gates.
@@ -152,6 +152,41 @@ Requirements:
 - Timestamp-based debounce (ignore edges within N ms)
 - Must tolerate the CPU stalling during a flash erase (see [Flash](#appendix--flash-wear-analysis))
 
+**Design parameters, now that G7 is measured:**
+
+- **Trigger:** `IRQ_RISING` on a 0 → 5 V transition.
+- **Debounce and lockout are separate timers**, which the current 5 s sleep conflates.
+  Debounce is tens of milliseconds, to reject edge noise. Lockout must exceed the 2 s pulse
+  so one ring yields one notification; the existing 5 s is a sensible value.
+- **Validate the pulse width before notifying.** Require the input to stay high for
+  100–200 ms before accepting a ring. Against a 2 s signal this costs nothing, and it
+  rejects short transients outright.
+
+**Instrument the misses.** Count presses that the IRQ latches *while a blocking operation is
+in progress* — those are exactly the rings the old polling loop would have dropped. Report
+the count in the heartbeat (C3).
+
+> A missed notification is unobservable by construction: the physical chime still sounds, so
+> a dropped alert only matters when nobody is home to hear about it. Neither firmware version
+> has ever shown a missed ring, which usefully bounds the rate from above but cannot
+> distinguish zero from a handful per year. The counter replaces the estimate with a
+> measurement, and costs nothing — the latch already has the timestamp and the loop already
+> knows when it was busy.
+
+> **Why validation matters here.** The reboot investigation has not ruled out EMI coupling
+> into this installation (see hardware queue item 10). If a transient ever reaches the input,
+> a bare edge trigger would send a phantom notification; a validated pulse would not. Cheap
+> insurance against a failure mode we cannot currently exclude.
+
+> **Structural note, not a feature.** Build the latch **per pin** rather than as a single
+> module-level flag. G9 (distinguishing the building entrance from the flat door) would need
+> a second input, and a per-pin structure makes that an extra entry rather than a rewrite.
+>
+> This is a few lines' difference and adds no complexity now. **B1 still handles exactly one
+> input** — G9 is deferred and unproven, and building for a hypothetical second input would
+> be over-engineering. The point is only to avoid a structure that would later have to be
+> undone.
+
 ### B2 — Watchdog — **P0**
 `machine.WDT`, fed from the main loop. Timeout must accommodate **both** a slow TLS
 handshake (~8 s) **and** a worst-case flash sector erase.
@@ -177,6 +212,11 @@ Also: remove the message-sending side effect from inside `connect_wifi()`. Conne
 notification are separate concerns.
 
 ### B4 — Bounded WiFi reconnection with backoff — **P1**
+> **Mark the reset as intentional.** The `machine.reset()` after N failed cycles would
+> otherwise be indistinguishable from a watchdog bite — both read as `warm-reset`. Set a
+> marker in a spare scratch register before resetting, and clear it once read, so
+> self-inflicted resets never pollute the B2 watchdog data.
+
 Interpret `wlan.status()` properly (`-3` wrong password, `-2` no AP found, `-1` link fail,
 `3` connected). Exponential backoff instead of the current fixed 3 s hammer. After N failed
 cycles, `machine.reset()`.
@@ -241,6 +281,30 @@ log to console on *every* error.
 handled by a compact code in the scratch registers plus, optionally, a *single* flash write
 on the way to a reset. Never continuous log persistence.
 
+### ✅ C5 — Persist the boot counter to Tier 2 — **P1**
+The Tier 1 boot counter counts almost nothing useful. Bench testing showed any hardware
+reset clears the scratch area — a power cycle and a RUN press both report `boot #1`. It
+therefore only counts soft reboots and watchdog bites, and contributes nothing to the
+production reboot dataset, which is entirely about power and RUN events.
+
+C4's *cause* half works and is the more important half. The *count* half does not.
+
+**Fix:** move the counter to Tier 2 (`state.json`), keeping the magic word in Tier 1 for
+warm/cold detection. One write per boot is affordable — daily reboots are ~365 writes a year
+against ~100,000 cycles.
+
+⚠️ **Boot loops are the hazard.** Resetting every five seconds would be 17,000 writes a day
+and a dead sector within a week: the "never write on a timer" rule violated by accident.
+
+**Guard:** persist only once the device has been up for **60 seconds**. A boot loop crashes
+before that and never writes; a genuine reboot writes once. This also improves what the
+number means — it becomes a count of *stable* boots, and any divergence from reality is
+itself a signal.
+
+Pair with a Tier 1 **unstable-boot counter**: incremented at boot, cleared when the 60
+seconds elapse. Free, no flash, and it makes a boot loop visible in the next heartbeat
+instead of invisible.
+
 ### C3 — Heartbeat — **P0**
 Periodic "alive" ping carrying uptime, free memory, RSSI, alert count and flash write count.
 Optionally a `/status` command for on-demand health.
@@ -251,7 +315,7 @@ alongside B1 in value.
 Keep the payload schema **extensible** so battery voltage can be added later without a
 breaking change.
 
-### ✅ C4 — Reset cause and boot counter (Tier 1) — **P1**
+### ✅ C4 — Reset cause and boot counter (Tier 1) — **P1, hardware-verified**
 Read `machine.reset_cause()` at boot, keep a boot counter in a watchdog scratch
 register, log both, and include them in the startup message and heartbeat.
 
@@ -321,6 +385,12 @@ committed deliverable.
 ## E. Architecture
 
 ### E1 — Configuration extraction — **P1**
+> **Pin assignments already extracted.** The two boards use different doorbell input pins
+> (GP16 vs GP18), so `doorBellPin` moved to a per-revision `board.py` ahead of schedule. The
+> rest of E1 — intervals, message strings, country code, polarity, feature toggles — still
+> belongs to Phase 2, and should go somewhere other than `board.py`, which is deliberately
+> limited to hardware wiring.
+
 `config.py` holding: GPIO pin, country code, all intervals, all message strings,
 active-high/active-low polarity, feature toggles.
 
@@ -335,6 +405,36 @@ Roughly: `config.py`, `wifi.py`, `telegram.py`, `applog.py`, `doorbell.py`, and 
 > `lastLogCheck = ...` mutate globals implicitly. Every one of these becomes a genuine bug
 > the moment the loop is wrapped in a function. This refactor must be done deliberately,
 > not mechanically — and **after** F1.
+
+### E6 — Do not offload networking to core 1 — **decision record**
+The RP2040 has two Cortex-M0+ cores and MicroPython exposes core 1 via `_thread`. Moving the
+network work there is a natural idea. **Rejected.**
+
+**It solves a problem B1 already solves, and solves it worse.** The reason to offload
+networking is to stop it blocking doorbell detection. A pin IRQ does that in about ten lines,
+and a hardware interrupt preempts everything — including a running thread — so the input is
+captured regardless of what either core is doing.
+
+It buys nothing else. Notification latency is dominated by the TLS handshake, which is no
+faster on core 1. There is no other work for core 0 to do meanwhile, and the device handles
+one event type.
+
+Supporting reasons:
+
+- `_thread` on rp2 is documented as experimental, and running the network stack on core 1 is
+  a known trouble spot — lwIP and the cyw43 driver are not thread-safe in MicroPython. The
+  v1.29.0 release notes list thread fixes for the rp2 port, so the area has been actively
+  broken.
+- MicroPython uses a GIL, so two threads interleave rather than running in parallel.
+  Concurrency, not parallelism — considerably less than the hardware implies.
+- **Watchdog interaction, the one that would actually bite.** If core 1 wedges while core 0
+  keeps feeding the watchdog (B2), the device never resets and the fault is invisible.
+  Avoiding that needs a cross-core liveness check — more machinery than the thing being
+  built.
+- Core 1's stack comes from the same 264 KB heap already shared with TLS buffers.
+
+**Where it would be legitimate:** genuine concurrent work, such as audio streaming to a SIP
+extension. Not for stopping one HTTPS POST from blocking a pin read.
 
 ### E3 — Notifier abstraction — **P3**
 A minimal `send(event)` interface so Telegram becomes one backend among several. Enables E4
@@ -395,12 +495,119 @@ warn on low.
 
 Deferred: no hardware to read on V1.1.
 
+### ✅ G7 — Characterise the ring pulse — **P1, was blocking B1**
+Measure how long the optocoupler output actually stays asserted during a ring.
+
+✅ **Measured.** Terminal 04 idles at ground and goes **high to 5 V for approximately two
+seconds** on a ring: a clean digital square wave, not an edge and not a pulse train.
+
+Consequences:
+
+- **Ring loss is rare, not routine.** A 2 s assertion against a 1 s poll is normally caught.
+  A ring is only missed if a blocking call spans the whole pulse — a ~3 s TLS handshake once
+  a minute gives roughly a 1–2% miss rate per ring. A handful per year, not the systematic
+  loss feared earlier. B1 remains worth doing; it is not an emergency.
+- **Polarity already correct.** Idle low, active high → `IRQ_RISING`, matching the existing
+  `PULL_DOWN` and `pressed = 1`.
+- **Both buttons assert it** (see G9), so the 2 s level says "someone rang", not which door.
+
+Original reasoning, retained for context:
+
+**Semantics confirmed, duration still unknown.** The deh0511 pinout documents terminal 04
+as a bell-signal output at roughly 5 V DC, matching Bracke's description of it as an
+ordinary button press. It is a level, not a brief edge — better for the current polling loop
+than the `tuxuser` project's "ring **pulse**" wording implied.
+
+What remains unmeasured is **how long it stays asserted**, which is the number that decides
+whether a one-second poll, a five-second post-press sleep, and multi-second blocking TLS
+calls can miss it.
+
+> **Measure under load, not open-circuit.** A signalling output is not necessarily a stiff
+> supply. 5 V through the 180 Ω series resistor draws roughly 21 mA into the PC817 — a
+> healthy LED drive, but a substantial load for a signal pin. If the level sags under it,
+> that is an argument for raising the resistor.
+
+> **A missed ring is silent.** No error, no log entry — just someone at the door who leaves.
+> Level semantics make this less likely than a pulse would, but not impossible.
+
+Two ways to measure, either is fine:
+
+- Scope or logic analyser on the optocoupler output during a real ring.
+- A tight-loop MicroPython script printing the pulse width in milliseconds. No equipment
+  needed; five minutes on the bench with a jumper standing in for the bell.
+
+**Sets B1's debounce window**, so it wants doing before B1 is written. Also feeds G3.
+
+✅ **Both buttons assert terminal 04** — confirmed by testing. See G9 for the consequence.
+
+While measuring, also capture **whether terminal 04 and the ED line assert simultaneously or
+with an offset**. That sets the correlation window G9 needs.
+
 ### G3 — Input signal conditioning — **P2**
 Document and handle the AC-bell case, where a single PC817 produces a pulse train at mains
 frequency rather than a clean level.
 
+✅ **Resolved for this hardware.** The deh0511 pinout for the 7630 Wohntelefon documents
+terminal 04 as a bell-signal output at approximately 5 V **DC**. There is no AC pulse train
+to coalesce, and the bridge-rectifier inference from mikrocontroller.net was correct.
+
+G3 therefore stays open only as a **generic warning for other users**, whose bells may well
+be AC. It is not something this installation needs to handle.
+
+**Bounce is confirmed by prior art, not merely suspected.** Bracke reports having had to
+solve bell-input debouncing among his first problems on the same TwinBus system. B1's
+debounce is therefore mandatory rather than defensive.
+
 Interacts directly with B1's debounce parameters. Decide: solve in software (pulse-train
 coalescing) or recommend an RC stretcher on the opto output.
+
+### G8 — Do not power the Pico from the bus — **P3, decision record**
+Terminal 05 on the 7630 carries the +24 V bus supply. It is tempting: if the reboots turn
+out to be supply-related, powering from the bus would remove the USB adapter from the
+picture entirely.
+
+**Recorded as rejected, and now settled by the numbers.** The TwinBus system handbook gives
+the 17573 power supply's output to the system bus as **15 V DC at 200 mA**. A Pico W's WiFi
+TX bursts alone are 250–300 mA — the transmit peak exceeds the entire system's DC budget.
+
+Bracke tried precisely this on the same system, a DC-DC converter off the bus, and reported
+that the intercom stopped working for lack of power; he moved to a separate supply. That is
+exactly what these figures predict. In a multi-party building the margin belongs to
+everyone's doorbell, not just this one.
+
+Written down so it does not resurface as an obvious idea.
+
+### G9 — Distinguish building entrance from flat door — **P3, deferred**
+Terminal 04 asserts for **both** the building door station and the flat's own Etagendrücker,
+confirmed by testing. Notifications therefore conflate two different events: someone at the
+building entrance, versus someone already inside at the flat door — usually a neighbour or a
+delivery that has already been let in.
+
+TwinBus itself distinguishes them, signalling each with a different ring tone, so the
+information exists on the system; it simply is not visible on terminal 04.
+
+**Approach.** The deh0511 pinout documents terminals 01 and 06 as *Etagentaster gegen GND*,
+so the flat's button has its own connection. A second optocoupler there gives the
+discriminator:
+
+| Terminal 04 | ED input | Meaning |
+| --- | --- | --- |
+| asserted | asserted | Flat door |
+| asserted | idle | Building entrance |
+
+Costs one optocoupler, one GPIO, and a time-window check in software.
+
+**Cautions.**
+
+- This senses a *switch line*, not a signal output, so it adds load to the Etagendrücker
+  circuit. The system handbook specifies bell buttons must not exceed 10 Ω contact
+  resistance, which suggests Ritto cares about impedance on that path. Keep the tap
+  high-impedance.
+- The correlation window depends on whether 04 and ED assert simultaneously or with an
+  offset. Measure during G7, since both buttons are to hand.
+
+Interacts with B1: two latched inputs rather than one, and the discrimination happens after
+both have been sampled rather than in either ISR.
 
 ### G6 — RUN pin noise immunity — **P1**
 Fit **100 nF from RUN to GND**, as close to the pin as layout allows, plus a **10 kΩ
@@ -447,6 +654,29 @@ retrofit.
 
 ## H. Documentation
 
+### H5 — Ritto/TwinBus safety warning — **P2**
+The README treats this as a standalone doorbell project. It is not: the TwinBus is a
+building-wide system fed from a PSU in a shared area. Bracke's writeup warns that mistakes
+connecting to a Ritto installation can damage the whole building's system, not just the
+endpoint.
+
+That is a materially different risk profile from cutting into a private doorbell, and the
+README should say so before the wiring instructions. The same caution appears
+community-sourced: a mikrocontroller.net poster with a logic analyser held off from probing
+his own installation because it served four parties and a mistake would have taken out
+everyone's doorbell.
+
+Terminal conventions worth documenting alongside it, since they recur across Ritto
+manuals: `a`/`b` are the two bus wires, `ED` is *Etagendrücker* (the flat's own door
+button), `TÖ` is *Türöffner* (door opener).
+
+The board-level points on the 7630 Wohntelefon are reverse-engineered rather than official.
+Per the deh0511 pinout, the ones this project touches are **04** (bell signal output, about
+5 V DC) and **03**/**09** (ground). **05** carries +24 V bus voltage — see G8 for why it
+should be left alone. Several points on that connector remain undocumented. Credit
+`deh0511.de/twinbus` as the source rather than reproducing the table wholesale. Also worth linking the prior art
+(`deh0511.de/twinbus`, beechy.de, `tuxuser/ritto_doorbell`) as pinout references.
+
 ### H1 — Broken links and typos — **P1, trivial**
 - Malformed SMD gerber URL: `.../blob/main/(assets/Gerber_...zip)` — parenthesis inside the
   URL, 404s
@@ -488,8 +718,8 @@ Split persisted data by write frequency, and **enforce the tier in code**, not b
 a soft reset and a watchdog reset (not power loss) — 32 bytes of free, zero-wear,
 reset-surviving storage, reachable via `machine.mem32` at the watchdog base.
 
-> **Verify before relying on it:** the bootrom and SDK reboot path use some of the upper
-> registers. Confine to scratch 0–3 and confirm against the specific MicroPython build.
+> ✅ **Verified on hardware.** Scratch 2 and 3 behave as expected on v1.23.0. Note that any
+> hardware reset clears them, RUN included — not only power loss, as first assumed.
 
 **The one rule that matters: never write flash on a timer.** Everything else follows.
 
@@ -528,6 +758,9 @@ directly), and a rollback path if the new build fails to boot.
 > Raised in the original review and then dropped when this roadmap was first written. It is
 > restored here because the two-device workflow makes it concretely valuable: promoting a
 > tested build currently means physically pulling the production Pico out of the entryway.
+>
+> Independently motivated by prior art: Bracke added HTTP-based firmware updates to his
+> TwinBus integration specifically to avoid opening the intercom case for every change.
 
 Deliberately **not** in Phase 1. An OTA path that can brick the device is worse than no OTA
 path, and the rollback story depends on C4's reset-cause detection to know a new build
@@ -564,7 +797,7 @@ Nothing to do until the upgrade happens; recorded so it is not rediscovered late
 ## Sequencing
 
 ### Phase 1 — Stop the bleeding
-✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → ✅ `C4` → `B1` → `B2` → `B6` → `C3`
+✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → ✅ `C4` → ✅ `C5` → `B1` → `B2` → `B6` → `C3`
 
 **Hardware checkpoint after B3**, before B1. Everything landed so far is host-tested only,
 and B1 changes interrupt behaviour — the hardest thing to debug with unverified changes
@@ -714,27 +947,57 @@ Open items for the bench unit, none yet answered:
    registers C4 writes to, MicroPython may use or clear them. The magic-word check would
    catch it — every boot would report as cold — but that is a silent degradation, not an
    error. See K1.
-2. **Prototype doorbell input pin** — confirm it is GP16. If the boards differ, that is an
-   argument for pulling `E1` forward so the pin is configuration rather than a constant.
+2. ⚠️ **Prototype doorbell input pin — the boards differ.** Production uses **GP16**, the
+   prototype uses **GP18**, confirmed from the firmware saved off the prototype before
+   reflashing.
+
+   **This blocks bench testing.** `doorBellPin = 16` is a constant in `main.py`, so flashing
+   the current tree to the bench unit would leave the input on the wrong pin — and fail
+   silently, since nothing would ever assert it.
+
+   ✅ **Resolved.** Pin assignments now live in `board.py` on the device, copied from a
+   per-revision file in `boards/`. `main.py` holds no pin defaults and refuses to start
+   without a complete definition — an earlier proposal to put the pin in `secrets.py` was
+   rejected, correctly, because a GPIO number is not a secret. See `ARCHITECTURE.md`.
 3. **Filesystem type** — `sys.implementation` and `os.statvfs('/')`. Settles I4 and the
    atomic-rename claim in `ARCHITECTURE.md`.
-4. **Prototype reboot behaviour on both power modes.** The VSYS jumper allows switching
+
+3b. ✅ **Ring pulse width — measured.** Terminal 04 idles at ground and goes high to 5 V for
+   about two seconds. Clean digital square wave. See G7 for what follows; B1 is unblocked.
+4. ⚠️ **The bench unit is a poor model for the reboot fault.** The battery on VSYS absorbs
+   the supply dips production is exposed to, so it is immune to that hypothesis outright. On
+   RUN it is **less exposed, not immune**: both boards carry a soldered button, so both have
+   a RUN net; production's simply fans out further, to a second button on wires through a
+   connector. A clean bench run therefore says little about the reboots, and G6 cannot be
+   validated there — the capacitor can be fitted, but there is no fault to suppress. Reboot
+   diagnosis is production-only, which is the main argument for promoting C4 there early.
+
+   The `chip=RUN` check is unaffected: pressing the soldered button pulls RUN low the same
+   way, so it still validates the CHIP_RESET bit map.
+
+5. **Prototype reboot behaviour on both power modes.** The VSYS jumper allows switching
    between battery-backed and direct-USB. Production is direct-USB with no battery, so the
    direct-USB mode should reproduce its behaviour; a battery-backed prototype that never
    reboots proves nothing about production, because the cell masks exactly the dips in
    question. Run both on the same socket as production and switch the offending light.
-5. **Charger module load-sharing.** Whether the load runs from USB while charging, or hangs
+6. **Charger module load-sharing.** Whether the load runs from USB while charging, or hangs
    off BAT+ with the cell charging and discharging simultaneously and held near 4.2 V.
    Affects cell longevity and what "on battery" means as a test condition.
-6. 🔬 **RUN pin pickup — elimination test running on production.** The external reset cable
+7. 🔬 **RUN pin pickup — elimination test running on production.** The external reset cable
    is disconnected on the production unit, firmware unchanged, so the board carries exactly
    one changed variable. Record the disconnect date and the prior reboot rate — "none since"
    only means something against a baseline. If the trigger is reproducible (switching the
    offending light), test actively rather than waiting.
 
-   **A negative result does not exonerate RUN:** the carrier board's PCB trace to the reset
-   connector remains, so this shortens the antenna rather than removing it. Only the
-   protoboard can eliminate it fully.
+   **A negative result does not exonerate RUN**, and less than previously stated. Production
+   carries a reset button on the carrier board *as well as* the external one, so pulling the
+   cable leaves a second button and its trace still on the net. This is a partial
+   elimination.
+
+   Two buttons on one net also doubles the exposure to a **degrading tactile switch**. A
+   contaminated switch can close spontaneously without mechanical provocation, which the
+   knock testing would not have revealed. Bisect by lifting the on-board button if C4
+   reports `chip=RUN`.
 
    **No positive control.** Deliberate attempts to provoke a reboot by switching the light,
    with the cable *connected*, produced nothing. An elimination test needs the fault to be
@@ -789,7 +1052,7 @@ Open items for the bench unit, none yet answered:
 
    C4 waits on bench verification rather than on this experiment, because it arrives
    alongside A3/A5/B3/I2, which *do* change behaviour.
-7. ✅ **Test target chat type — resolved.** Production is a **group**, and the bench target
+8. ✅ **Test target chat type — resolved.** Production is a **group**, and the bench target
    will be a group too. Groups deliver `message` while channels deliver `channel_post`, and
    A1 has not landed — the current parser handles only `channel_post`. A test channel would
    have passed while production quietly failed on `/log`.
@@ -798,7 +1061,67 @@ Open items for the bench unit, none yet answered:
    update in a group currently raises `KeyError`, which the main loop's catch-all turns into
    a spurious `wlan.disconnect()` and a "back online" message. Do not read that as a new
    fault.
-8. **USB adapter quality on production.** A one-minute swap for a known-good supply is the
+9. **USB adapter quality on production.** A one-minute swap for a known-good supply is the
    cheapest test of the brownout hypothesis and needs no hardware revision. **Raised in
    priority** by the failed reproduction attempt: a cheap adapter sagging under a mains
    transient fits the symptom as well as RUN pickup does, and remains untested.
+
+   The PSU powers **only** the Pico. Two consequences. There is no second device on the
+   supply to act as a witness, so a whole-supply dip cannot be confirmed by observing
+   something else fail. And the largest load that adapter ever sees is the Pico's own WiFi
+   TX bursts (250–300 mA peaks) — a marginal adapter can dip on those alone. A mains sag
+   coinciding with a TX burst is a compound trigger that would be rare, unreproducible on
+   demand, and still correlated with switching.
+
+10. 🔬 **Common-mode coupling across the optocoupler — hypothesis, speculative.**
+    The doorbell is a **Ritto TwinBus**, roughly 24 V, fed from a PSU elsewhere in the
+    building — a different circuit from both the Pico and the switched lights. An earlier
+    version of this item assumed a shared circuit and is superseded.
+
+    The separate PSU creates two independent ground references bridged by a single component:
+    the Pico sits on the flat's mains via its USB adapter, the TwinBus sits on the building's
+    PSU, and the optocoupler is the only thing spanning them. A step in the potential
+    difference between those domains appears across the isolation barrier. Isolation blocks
+    DC, but the barrier's inter-electrode capacitance (order 1 pF) passes displacement
+    current on a fast dV/dt. Switching a load in the flat shifts the local reference relative
+    to the building's.
+
+    Consistent with observations for the same reason as the superseded version: the LED side
+    needs real forward current for a real duration, while displacement current arrives on the
+    output side by a different path. Resets without phantom rings is what it predicts.
+
+    **New testable prediction.** TwinBus is a building-wide bus carrying other residents'
+    calls and door-opener actuations. If this mechanism is real, reboots should correlate
+    with **neighbours' doorbell activity**, not only with the flat's lights. Checkable once
+    C4 is on production, using Telegram's own message timestamps.
+
+    **The manufacturer acknowledges this failure class.** The TwinBus system handbook carries
+    an explicit warning that devices with strong magnetic fields — contactors, transformers —
+    must not be installed near the power supply or auxiliary units, because induced voltage
+    spikes cause malfunctions. Ritto is documenting susceptibility to precisely the kind of
+    transient under discussion here.
+
+    **Installation rule worth checking on site.** The handbook requires mains and TwinBus
+    wiring to be routed separately to satisfy VDE 0800: 10 cm apart, or with a divider where
+    they share a conduit. Older buildings frequently do not respect this. If the separation
+    is absent anywhere along the run, the coupling path becomes materially more plausible.
+
+    **Prior art warning.** `tuxuser/ritto_doorbell`, an ESP8266 integration with the same
+    TwinBus system, is archived with a note that it never worked reliably. The kind of
+    unreliability is unstated, so this is suggestive rather than diagnostic — but it is a
+    second known instance of a TwinBus tap misbehaving.
+
+    *(An earlier note here questioned whether "pin 04" meant that project's GPIO04, which is
+    a mute relay output. It refers to a terminal on the Ritto mainboard itself, per their
+    TwinBus schematic. Retracted.)*
+
+    Mitigations if confirmed, cheapest first: shorten the optocoupler-to-Pico wiring, add an
+    RC on the optocoupler output, fit a ferrite on the doorbell pair, separate the two
+    harnesses.
+
+    *Note on sources:* `deh0511.de/twinbus`, the origin of the pinout diagram both prior
+    projects cite, is a frameset and could not be retrieved programmatically. The pin table
+    would need pasting in by hand.
+
+    C4 adjudicates regardless: `chip=RUN` keeps it alive, `chip=POR/BOD` points at the
+    supply.

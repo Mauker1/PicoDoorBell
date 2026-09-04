@@ -57,7 +57,7 @@ Requests.raise_oserror = False
 # Addresses under test, mirrored from main.py.
 SCRATCH0 = 0x40058000 + 0x0c
 MAGIC_ADDR = SCRATCH0 + 2 * 4
-COUNT_ADDR = SCRATCH0 + 3 * 4
+UNSTABLE_ADDR = SCRATCH0 + 3 * 4
 CHIP_RESET = 0x40064000 + 0x08
 WDT_REASON = 0x40058000 + 0x08
 
@@ -69,12 +69,12 @@ set_reset_cause(1)                      # PWRON_RESET
 ns = load_firmware()
 info = ns['resetInfo']
 
-check('cold boot counts as boot 1', info['bootCount'], 1)
+check('cold boot is attempt 1', info['unstableBoots'], 1)
 check('cold boot flagged as cold', info['warmBoot'], False)
 check('cause name resolved', info['cause'], 'PWRON_RESET')
 check('POR decoded from chip register', info['flags'], ['POR/BOD'])
 check('magic word written for next boot', mem32[MAGIC_ADDR], 0x50444231)
-check('counter persisted to scratch', mem32[COUNT_ADDR], 1)
+check('attempt counter written to scratch', mem32[UNSTABLE_ADDR], 1)
 
 # --- 2. Warm boot: magic survived, so power was never lost -----------------
 mem32[CHIP_RESET] = 1 << 16             # HAD_RUN
@@ -82,13 +82,13 @@ set_reset_cause(2)                      # HARD_RESET
 ns = load_firmware()
 info = ns['resetInfo']
 
-check('warm boot increments the counter', info['bootCount'], 2)
+check('warm boot increments the attempt counter', info['unstableBoots'], 2)
 check('warm boot flagged as warm', info['warmBoot'], True)
 check('RUN pin decoded', info['flags'], ['RUN'])
 check('cause reported as hard reset', info['cause'], 'HARD_RESET')
 
 ns = load_firmware()
-check('counter keeps climbing', ns['resetInfo']['bootCount'], 3)
+check('attempts keep climbing', ns['resetInfo']['unstableBoots'], 3)
 
 # --- 3. Power cut clears the scratch registers -----------------------------
 # A real power-on reset zeroes them, which is exactly how we detect it
@@ -99,12 +99,12 @@ set_reset_cause(1)
 ns = load_firmware()
 info = ns['resetInfo']
 
-check('power cut restarts the count', info['bootCount'], 1)
+check('power cut restarts the attempt count', info['unstableBoots'], 1)
 check('power cut detected as cold', info['warmBoot'], False)
 
 # --- 4. Watchdog reset, once B2 exists -------------------------------------
 mem32[MAGIC_ADDR] = 0x50444231
-mem32[COUNT_ADDR] = 41
+mem32[UNSTABLE_ADDR] = 41
 mem32[WDT_REASON] = 1                   # TIMER
 mem32[CHIP_RESET] = 0
 set_reset_cause(3)                      # WDT_RESET
@@ -114,7 +114,44 @@ info = ns['resetInfo']
 check('watchdog cause identified', info['cause'], 'WDT_RESET')
 check('watchdog reason captured', info['wdtReason'], 1)
 check('watchdog reset counted as warm', info['warmBoot'], True)
-check('counter continued from scratch', info['bootCount'], 42)
+check('attempts continued from scratch', info['unstableBoots'], 42)
+
+# --- 4b. Verdicts, against real hardware observations ----------------------
+# Values below are exactly what the bench unit reported.
+
+mem32.cells.clear()
+mem32[CHIP_RESET] = 0x00000100          # observed on a power-on boot
+set_reset_cause(3)                      # reset_cause said WDT_RESET -- wrong
+ns = load_firmware()
+check('power-on verdict ignores a wrong cause',
+      ns['reset_verdict'](ns['resetInfo']), 'power')
+
+mem32.cells.clear()
+mem32[CHIP_RESET] = 0x00010000          # observed after pressing reset
+set_reset_cause(1)                      # reset_cause said PWRON_RESET -- wrong
+ns = load_firmware()
+check('RUN verdict ignores a wrong cause',
+      ns['reset_verdict'](ns['resetInfo']), 'run-pin')
+check('RUN reset reads as cold', ns['resetInfo']['warmBoot'], False)
+
+# Scratch intact means no hardware reset, so CHIP_RESET is stale.
+mem32[MAGIC_ADDR] = 0x50444231
+mem32[UNSTABLE_ADDR] = 7
+mem32[CHIP_RESET] = 0x00000100          # left over from an earlier power-up
+ns = load_firmware()
+check('warm boot reports a warm reset',
+      ns['reset_verdict'](ns['resetInfo']), 'warm-reset')
+check('warm boot does not misread stale POR as power',
+      ns['reset_verdict'](ns['resetInfo']) != 'power', True)
+line = ns['format_reset_info'](ns['resetInfo'])
+check('stale chip flags are labelled', 'chip(stale)=' in line, True)
+check('advisory cause is bracketed', '(cause=' in line, True)
+
+mem32.cells.clear()
+mem32[CHIP_RESET] = 0                   # no flags, no scratch
+ns = load_firmware()
+check('no evidence reads as unknown',
+      ns['reset_verdict'](ns['resetInfo']), 'unknown')
 
 # --- 5. The discriminator the production unit needs ------------------------
 # Brownout and RUN-pin pickup must not look alike.
@@ -145,9 +182,76 @@ mem32[CHIP_RESET] = (1 << 8) | (1 << 16)
 set_reset_cause(1)
 ns = load_firmware()
 line = ns['format_reset_info'](ns['resetInfo'])
+# Both bits at once is not something hardware produces -- confirmed on the
+# bench that flags do not accumulate -- but the formatter should cope.
 check('summary names both flags', 'POR/BOD+RUN' in line, True)
 check('summary carries the raw word', 'raw=0x00010100' in line, True)
 check('summary reports boot number', 'boot #1' in line, True)
+
+# --- 9. C5: the boot number is durable, the attempt counter is not ---------
+import json as _json
+
+def stable_boot(ns):
+    """Run the loop's stability gate as if BOOT_STABLE_MS had elapsed."""
+    ns['bootStableAt'] = -1
+    ns['mark_boot_stable']()
+
+mem32.cells.clear()
+mem32[CHIP_RESET] = 1 << 8
+set_reset_cause(1)
+try:
+    os.remove('state.json')
+except OSError:
+    pass
+
+ns = load_firmware()
+check('first boot is number 1', ns['bootNumber'], 1)
+check('no flash write before proving stable', os.path.exists('state.json'), False)
+stable_boot(ns)
+check('stable boot is persisted', _json.load(open('state.json'))['boots'], 1)
+check('attempt counter cleared once stable', mem32[UNSTABLE_ADDR], 0)
+
+# A power cycle clears the scratch area but must not lose the total.
+mem32.cells.clear()
+mem32[CHIP_RESET] = 1 << 8
+ns = load_firmware()
+check('boot number survives a power cycle', ns['bootNumber'], 2)
+check('verdict still reads power', ns['reset_verdict'](ns['resetInfo']), 'power')
+stable_boot(ns)
+check('total advanced to 2', _json.load(open('state.json'))['boots'], 2)
+
+# A RUN reset likewise -- this is what Tier 1 could not do.
+mem32.cells.clear()
+mem32[CHIP_RESET] = 1 << 16
+ns = load_firmware()
+check('boot number survives a RUN reset', ns['bootNumber'], 3)
+
+# A boot loop must never reach flash.
+before = _json.load(open('state.json'))['writes']
+for _ in range(20):
+    mem32.cells.clear()
+    mem32[CHIP_RESET] = 1 << 8
+    load_firmware()          # crashes out before the gate, as a loop would
+after = _json.load(open('state.json'))['writes']
+check('twenty unstable boots wrote nothing', after, before)
+
+# Repeated warm resets accumulate visibly.
+mem32.cells.clear()
+mem32[MAGIC_ADDR] = 0x50444231
+mem32[UNSTABLE_ADDR] = 4
+ns = load_firmware()
+check('unstable attempts counted', ns['resetInfo']['unstableBoots'], 5)
+check('summary flags the loop',
+      'unstable=5' in ns['format_reset_info'](ns['resetInfo']), True)
+
+# Schema bump: a v1 file migrates and starts counting from zero.
+open('state.json', 'w').write('{"v": 1, "chatId": -5, "epochAnchor": null, "writes": 9}')
+mem32.cells.clear()
+mem32[CHIP_RESET] = 1 << 8
+ns = load_firmware()
+check('v1 file migrates to v2', ns['state']['v'], 2)
+check('migration preserves chatId', ns['state']['chatId'], -5)
+check('absent boots field defaults to zero', ns['state']['boots'], 0)
 
 # --- 8. Diagnostics must never stop the boot -------------------------------
 class ExplodingMem:
@@ -165,8 +269,8 @@ try:
     check('boot survives unreadable registers', ns['doorBellInput'] is not None, True)
     check('reset info degrades rather than raising',
           ns['resetInfo']['cause'] is not None, True)
-    check('unreadable registers give boot count 0',
-          ns['resetInfo']['bootCount'], 0)
+    check('unreadable registers give attempt count 0',
+          ns['resetInfo']['unstableBoots'], 0)
 finally:
     sys.modules['machine'].mem32 = saved
 

@@ -41,6 +41,36 @@ except ImportError:
     import os
 from secrets import secrets
 
+####################################################################################
+# Board definition. Single source of truth for pin assignments -- main.py holds no
+# defaults, so a board it cannot identify is a board it refuses to drive.
+#
+# Copy the file matching your carrier revision from boards/ to `board.py` on the
+# device. Failing at import is deliberate: a Pico with no pin definition cannot
+# watch the doorbell, and booting into something that looks alive but is not is the
+# exact silent failure this firmware exists to avoid.
+####################################################################################
+
+REQUIRED_BOARD_PINS = ('doorBellPin',)
+
+try:
+    import board
+except ImportError:
+    raise ImportError(
+        'No board.py found. Copy the definition for your carrier revision from '
+        'boards/ (for example boards/board_v1_2.py) to board.py on the device.')
+
+_missing = []
+for _name in REQUIRED_BOARD_PINS:
+    if not hasattr(board, _name):
+        _missing.append(_name)
+if _missing:
+    raise ValueError(
+        'board.py is incomplete, missing: ' + ', '.join(_missing) +
+        '. Compare it against the files in boards/.')
+
+doorBellPin = board.doorBellPin
+
 # Set country to avoid possible errors
 rp2.country('DE')
 
@@ -57,9 +87,6 @@ ssid = secrets['ssid']
 pw = secrets['pw']
 botToken = secrets['botToken']
 chatId = secrets['telegramDmUid']
-
-# GPIO wired to the optocoupler output. E1 will move this to config.py.
-doorBellPin = 16
 
 # Messages
 startupText = 'I am online for the first time! Bot started!'
@@ -235,7 +262,7 @@ def reset_log():
 
 STATE_PATH = 'state.json'
 STATE_TMP = 'state.json.tmp'
-STATE_VERSION = 1
+STATE_VERSION = 2
 
 # Set False when the on-disk file was written by newer firmware, so a
 # downgraded build runs on defaults instead of clobbering it.
@@ -249,6 +276,7 @@ def default_state():
         'chatId': None,        # A4: overrides secrets on supergroup migration
         'epochAnchor': None,   # C1: NTP epoch captured at last sync
         'writes': 0,           # I3: wear counter, reported in the heartbeat
+        'boots': 0,            # C5: stable boots; survives hardware resets
     }
 
 def state_is_future(data):
@@ -265,10 +293,14 @@ def migrate_state(data):
     if not isinstance(data, dict):
         return None
     version = data.get('v', 0)
-    # Future migrations chain here, oldest first:
-    #   if version < 2:
+    # Migrations chain here, oldest first. v1 -> v2 added 'boots' and needs
+    # no body: the merge below fills absent keys from defaults, so an older
+    # file simply starts counting from zero. The version bump still matters,
+    # so a downgraded build recognises the file as newer and leaves it alone.
+    # Later migrations that do need a body go here:
+    #   if version < 3:
     #       data['newField'] = derive_from(data)
-    #       version = 2
+    #       version = 3
     merged = default_state()
     for key in merged:
         if key in data:
@@ -381,7 +413,18 @@ WATCHDOG_SCRATCH0 = WATCHDOG_BASE + 0x0c   # SCRATCH0..7, four bytes each
 # 0-3. Using the top of that range leaves 0 and 1 alone in case the port
 # wants them.
 SCRATCH_MAGIC_IDX = 2
-SCRATCH_BOOTCOUNT_IDX = 3
+# Counts boots since the last one that proved stable. Not a total: any
+# hardware reset clears the scratch area, so a running total has to live in
+# flash (see 'boots' in state.json). This one exists to make boot loops
+# visible, which is precisely the case where flash must not be written.
+SCRATCH_UNSTABLE_IDX = 3
+
+# How long the device must stay up before a boot counts as stable.
+BOOT_STABLE_MS = 60000
+
+bootNumber = None
+bootRecorded = False
+bootStableAt = 0
 SCRATCH_MAGIC = 0x50444231   # 'PDB1'
 
 # RP2040 VREG_AND_CHIP_RESET.CHIP_RESET. Records what caused the last reset
@@ -441,7 +484,8 @@ def read_reset_info():
         'chipReset': None,
         'flags': [],
         'wdtReason': None,
-        'bootCount': 0,
+        'unstableBoots': 0,
+        'bootNumber': None,
         'warmBoot': False,
     }
     try:
@@ -462,29 +506,73 @@ def read_reset_info():
         pass
     try:
         if scratch_read(SCRATCH_MAGIC_IDX) == SCRATCH_MAGIC:
-            # Magic intact: the registers kept their contents, so this was
-            # a warm reset rather than a power cycle.
+            # Magic intact: nothing reset the chip, so this was a soft
+            # reboot or a watchdog bite.
             info['warmBoot'] = True
-            info['bootCount'] = scratch_read(SCRATCH_BOOTCOUNT_IDX) + 1
+            info['unstableBoots'] = scratch_read(SCRATCH_UNSTABLE_IDX) + 1
         else:
-            info['bootCount'] = 1
+            info['unstableBoots'] = 1
             scratch_write(SCRATCH_MAGIC_IDX, SCRATCH_MAGIC)
-        scratch_write(SCRATCH_BOOTCOUNT_IDX, info['bootCount'])
+        scratch_write(SCRATCH_UNSTABLE_IDX, info['unstableBoots'])
     except Exception:
         pass
     return info
 
+def reset_verdict(info):
+    """Decide what actually caused the reset.
+
+    Deliberately ignores machine.reset_cause() and WATCHDOG_REASON. Both
+    are unreliable on rp2: the bootrom uses the watchdog to launch the
+    application, so REASON carries the TIMER bit through ordinary
+    startup. Observed on hardware, same board, minutes apart:
+    cause=WDT_RESET on a soft reboot, then cause=PWRON_RESET on a RUN-pin
+    reset. Neither was right.
+
+    CHIP_RESET and the scratch magic are trustworthy, and were both
+    confirmed on hardware: POR reads 0x00000100, RUN reads 0x00010000,
+    and the bits do not accumulate -- each reset reports only its own
+    cause.
+
+    The scratch area is cleared by any hardware reset, RUN included, not
+    only by power loss. So a surviving magic word means no hardware reset
+    occurred, which in turn means CHIP_RESET still describes some earlier
+    event and must be ignored.
+    """
+    if info is None:
+        return 'unknown'
+    if info['warmBoot']:
+        # Scratch survived, so nothing reset the chip. Soft reboot, or a
+        # watchdog bite once B2 exists. CHIP_RESET here is stale.
+        return 'warm-reset'
+    flags = info['flags']
+    if 'POR/BOD' in flags:
+        # Supply dropped, or this is the first power-up.
+        return 'power'
+    if 'RUN' in flags:
+        return 'run-pin'
+    return 'unknown'
+
 def format_reset_info(info):
     if info is None:
         return 'Reset info unavailable'
-    parts = ['boot #' + str(info['bootCount']), 'cause=' + str(info['cause'])]
+    number = info['bootNumber']
+    parts = ['boot #' + (str(number) if number is not None else '?'),
+             'verdict=' + reset_verdict(info)]
+    if info['unstableBoots'] > 1:
+        # More than one attempt since the last stable boot: a loop.
+        parts.append('unstable=' + str(info['unstableBoots']))
     if info['flags']:
-        parts.append('chip=' + '+'.join(info['flags']))
+        # Stale on a warm boot -- see reset_verdict().
+        label = 'chip' if not info['warmBoot'] else 'chip(stale)'
+        parts.append(label + '=' + '+'.join(info['flags']))
     if info['chipReset'] is not None:
         parts.append('raw=0x%08x' % info['chipReset'])
-    if info['wdtReason']:
-        parts.append('wdt=0x%x' % info['wdtReason'])
     parts.append('warm' if info['warmBoot'] else 'cold')
+    # Advisory only. Kept because it is free and occasionally corroborates.
+    advisory = 'cause=' + str(info['cause'])
+    if info['wdtReason']:
+        advisory += ' wdt=0x%x' % info['wdtReason']
+    parts.append('(' + advisory + ')')
     return 'Reset: ' + ' '.join(parts)
 
 # Populated for real by boot(). Defined here so state_get/state_set always
@@ -578,6 +666,9 @@ def error_halt(message):
     rather than reset. B2 will let the watchdog escalate this.
     """
     print('FATAL: ' + message)
+    # boot() normally logs this after state loads; on this path it never
+    # gets there, and the reset cause is the thing worth having.
+    print(format_reset_info(resetInfo))
     while True:
         try:
             if led is not None:
@@ -590,6 +681,33 @@ def error_halt(message):
         except Exception:
             time.sleep(1)
 
+def mark_boot_stable():
+    """Record this boot in flash, once it has proven it can stay up.
+
+    Called from the main loop, but this is not a timed write: it fires at
+    most once per boot, and during a boot loop it never fires at all --
+    which is the whole point. A device resetting every five seconds would
+    otherwise manage 17,000 writes a day and kill a sector inside a week.
+
+    The number therefore counts *stable* boots. Any divergence between it
+    and reality is itself informative: the Tier 1 unstable counter carries
+    the attempts that did not get this far.
+    """
+    global bootRecorded
+    if bootRecorded or bootNumber is None:
+        return
+    if time.ticks_diff(time.ticks_ms(), bootStableAt) < 0:
+        return
+    bootRecorded = True
+    state_set('boots', bootNumber)
+    # Attempts since the last stable boot are now history.
+    try:
+        scratch_write(SCRATCH_UNSTABLE_IDX, 0)
+    except Exception:
+        pass
+    append_to_log('Boot ' + str(bootNumber) + ' stable after ' +
+                  str(BOOT_STABLE_MS // 1000) + 's')
+
 def boot():
     """Bring the device up, hardware first.
 
@@ -601,13 +719,10 @@ def boot():
 
     Now: pins, then flash, then network. Only the first is fatal.
     """
-    global state, resetInfo
+    global state, resetInfo, bootNumber, bootStableAt
     # First, before anything can fail. The scratch registers are volatile
     # and a later crash would take the evidence with it.
     resetInfo = read_reset_info()
-    summary = format_reset_info(resetInfo)
-    print(summary)
-    append_to_log(summary)
 
     try:
         setup_hardware()
@@ -621,6 +736,17 @@ def boot():
         state = default_state()
         append_to_log('State load failed, using defaults: ' + str(e))
         print('State load failed, using defaults: ' + str(e))
+
+    # The running total lives in flash, so it is only knowable once state
+    # has loaded -- which is why the summary is logged here rather than at
+    # the top of boot(). Nothing is written yet; see mark_boot_stable().
+    bootNumber = state_get('boots', 0) + 1
+    resetInfo['bootNumber'] = bootNumber
+    bootStableAt = time.ticks_add(time.ticks_ms(), BOOT_STABLE_MS)
+
+    summary = format_reset_info(resetInfo)
+    print(summary)
+    append_to_log(summary)
 
     try:
         connect_wifi()
@@ -649,6 +775,8 @@ while True:
             read_message(chatId)
             lastLogCheck = time.ticks_ms()
         
+        mark_boot_stable()
+
         time.sleep(loopDelay)
         
     

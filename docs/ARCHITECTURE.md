@@ -10,10 +10,51 @@ setup — and should stay free of internals.
 
 ## Target platform
 
-| | Version | Notes |
+| | Production | Bench |
 | --- | --- | --- |
-| Production unit | MicroPython v1.23.0 (2024-06-02), Pico W | Direct USB power, no battery |
-| Bench unit | MicroPython v1.23.0, Pico W | Battery module on VSYS, jumper-switchable to direct USB |
+| Board | Pico W | Pico W |
+| MicroPython | v1.23.0 (2024-06-02) | v1.23.0 |
+| Power | Direct USB, no battery | Battery module on VSYS, jumper-switchable to direct USB |
+| Reset | Push button on the carrier board **and** an external button on wires via connector | Push button soldered to the board only |
+| Doorbell input | GP16 | **GP18** |
+| Chat target | Telegram group | Separate bot and group |
+
+### The bench unit cannot model the reboot fault
+
+Production reboots intermittently and the cause is unresolved. The two remaining
+candidates are supply sag and RUN-pin pickup, and **the bench unit is immune to
+both by construction**:
+
+- *Supply sag* — the battery on VSYS is exactly the dip-absorbing buffer that
+  production lacks. The bench is immune to this one.
+- *RUN pickup* — the bench is **less exposed, not immune**. Both boards have a
+  button soldered to the carrier, so both have a RUN net. Production's fans out
+  further, to a second button on wires through a connector.
+
+A bench unit running cleanly for weeks therefore says little about the reboots.
+**The bench validates firmware; reboot diagnosis happens on production.** This is
+the main argument for promoting C4 to the production unit rather than waiting for
+a long clean bench run.
+
+### Consequences for the RUN investigation
+
+Production's RUN net reaches two buttons and a connector. Disconnecting the
+external cable leaves the on-board button and its trace attached, so that
+elimination test is **partial**, not complete.
+
+Two buttons on one net also doubles the exposure to a degrading tactile switch. A
+contaminated switch can close spontaneously with no mechanical provocation, which
+knock-testing would not reveal.
+
+The bisection, once C4 reports a cause:
+
+| C4 says | Conclusion | Next step |
+| --- | --- | --- |
+| `chip=RUN` | Fault is on the RUN net | External cable already out; next lift the on-board button |
+| `chip=POR/BOD` | RUN net exonerated | Supply: swap the USB adapter, check the circuit load |
+
+It also means G6 (RUN noise immunity) cannot be validated on the bench: the
+capacitor can be fitted, but there is no fault there to suppress.
 
 Both boards run the same version. The bench unit was matched to production
 rather than the reverse: production is the instrument for the reboot
@@ -51,7 +92,7 @@ all, and getting it wrong destroys hardware.
 | Tier | Medium | Survives | Cost per write | Contents |
 | --- | --- | --- | --- | --- |
 | **0** | RAM | nothing | free | Rolling log, alert counters, live event queue |
-| **1** | Watchdog scratch registers | warm reset (**not** power loss) | free | Magic word, boot count |
+| **1** | Watchdog scratch registers | soft reset and watchdog only — **any** hardware reset clears them, RUN included | free | Magic word, unstable-boot count |
 | **2** | Flash — `state.json` | everything | one 4 KB sector erase | `chatId`, `epochAnchor`, `writes` |
 | **3** | Flash — `state.json` | everything | one 4 KB sector erase | Queue snapshot, written only on rare triggers |
 
@@ -105,8 +146,10 @@ Ask, in order:
 1. **Does it need to survive anything?** No → **Tier 0**. This is the default
    and most values belong here. The log, counters and the live queue are all
    Tier 0.
-2. **Does it only need to survive a reset, not a power cut?** → **Tier 1**.
-   Free, zero wear, 32 bytes total.
+2. **Does it only need to survive a soft reboot or watchdog bite?** → **Tier 1**.
+   Free, zero wear, 32 bytes total. Note that *any* hardware reset clears these,
+   RUN included — confirmed on hardware — so they do not survive as much as the
+   name suggests.
 3. **Does it change rarely — a handful of times in the device's life?** →
    **Tier 2**. A chat ID that changes on supergroup migration qualifies. A
    "last doorbell press" timestamp does **not**; it would be one write per
@@ -127,10 +170,11 @@ that actually matters.
 
 ```json
 {
-  "v": 1,
+  "v": 2,
   "chatId": null,
   "epochAnchor": null,
-  "writes": 0
+  "writes": 0,
+  "boots": 0
 }
 ```
 
@@ -140,6 +184,7 @@ that actually matters.
 | `chatId` | Overrides the configured chat after a supergroup migration. |
 | `epochAnchor` | Wall-clock epoch captured at the last NTP sync. |
 | `writes` | Monotonic write counter. Makes wear observable rather than theoretical. |
+| `boots` | Count of **stable** boots. See below. |
 
 ### API
 
@@ -195,6 +240,46 @@ alone.
 
 ---
 
+## Board definitions
+
+Pin assignments live in `board.py` on the device, copied from one of the
+per-revision files in `boards/`:
+
+| File | Board |
+| --- | --- |
+| `boards/board_v1_2.py` | Production carrier, revision V1.2 — doorbell input on GP16 |
+| `boards/board_prototype.py` | Bench prototype — doorbell input on GP18 |
+
+`main.py` holds **no pin defaults**. It imports `board`, checks every name in
+`REQUIRED_BOARD_PINS` is present, and raises otherwise.
+
+### Why it refuses to start
+
+A board whose pins are undefined cannot watch the doorbell. Booting into
+something that looks alive but is not is precisely the silent failure this
+firmware exists to eliminate, so an incomplete install stops at import with a
+message naming what is missing.
+
+This costs the LED as a signal — the failure happens before `setup_hardware()`
+runs, so the only output is on serial. That is the right trade: the situation only
+arises during installation, when a console is attached anyway.
+
+### Why there are no defaults in `main.py`
+
+A default plus an override would leave a pin number in `main.py` that is
+authoritative on one board and dead on another. One source of truth is the point;
+a fallback would reintroduce the ambiguity the file exists to remove.
+
+### Adding a revision
+
+Add `boards/board_<revision>.py` and copy it to the device as `board.py`. Keeping
+superseded revisions in the repo documents the hardware history and keeps older
+boards runnable on current firmware. Name files by **revision**, not by role —
+"prototype" and "production" describe jobs that move between boards, while a
+revision number does not.
+
+---
+
 ## Boot sequence
 
 `boot()` runs three stages in a fixed order. Only the first is fatal.
@@ -244,7 +329,151 @@ loop does so after a reconnect, `boot()` after the first connect.
 
 ---
 
+## Tier 1 — reset diagnosis
 
+The production unit reboots intermittently, correlated with switching mains
+loads on the same circuit. The cause is unresolved. Every restart used to look
+identical — a startup message in Telegram — which conflates a supply brownout, a
+spurious hard reset, and a firmware crash.
+
+Three signals are read at boot. Bench testing then established that only two of
+them are worth believing.
+
+| Signal | Verdict it supports | Status |
+| --- | --- | --- |
+| `CHIP_RESET` register | `POR/BOD` = supply, `RUN` = pin pulled low | ✅ Confirmed on hardware |
+| Scratch magic word | Present = no hardware reset occurred | ✅ Confirmed on hardware |
+| `machine.reset_cause()` | — | ❌ **Unreliable on rp2. Advisory only.** |
+| `WATCHDOG_REASON` | — | ❌ Polluted by the bootrom. Advisory only. |
+
+### `reset_cause()` cannot be trusted here
+
+The RP2040 bootrom uses the watchdog to launch the application, so
+`WATCHDOG_REASON` carries the TIMER bit through an ordinary startup and
+`machine.reset_cause()` reports it as a watchdog reset.
+
+Observed on the bench unit, same board, minutes apart:
+
+| Actual event | `reset_cause()` said | `CHIP_RESET` said |
+| --- | --- | --- |
+| Soft reboot after a power-up | `WDT_RESET` | `0x00000100` — POR ✅ |
+| RUN pin pressed | `PWRON_RESET` | `0x00010000` — RUN ✅ |
+
+Wrong both times, in different directions. Both values are still logged, in
+brackets, because they cost nothing and occasionally corroborate — but nothing
+branches on them. Reading three independent signals is what made this visible;
+a single-source implementation would have reported confident nonsense.
+
+### Verified register behaviour
+
+- **`POR/BOD` is bit 8, `RUN` is bit 16.** Confirmed against real resets.
+- **The flags do not accumulate.** A RUN reset following a power-up reads
+  `0x00010000`, not `0x00010100`. Each reset reports only its own cause, so
+  `CHIP_RESET` never needs clearing.
+- **Any hardware reset clears the scratch area, RUN included** — not only power
+  loss, as first assumed.
+
+That last point yields the decision rule:
+
+| Scratch | Meaning |
+| --- | --- |
+| Cleared (`cold`) | A real hardware reset happened — trust `CHIP_RESET` |
+| Intact (`warm`) | No hardware reset: soft reboot, or a watchdog bite once B2 lands. **`CHIP_RESET` is stale**, and is labelled `chip(stale)=` in the log |
+
+### Confirmed boot matrix
+
+Every path verified on the bench unit:
+
+| Event | `raw` | Flags | Scratch | Verdict | `reset_cause()` said |
+| --- | --- | --- | --- | --- | --- |
+| Power cycle | `0x00000100` | `POR/BOD` | cleared, `boot #1` | `power` | `PWRON_RESET` ✅ |
+| RUN pin pressed | `0x00010000` | `RUN` | cleared, `boot #1` | `run-pin` | `PWRON_RESET` ❌ |
+| Soft reboot (first run) | `0x00000100` stale | stale | cleared, `boot #1` | `power` ⚠️ | `WDT_RESET` ❌ |
+| Soft reboot (counter live) | `0x00000100` stale | stale | survives, `boot #2` | `warm-reset` | `PWRON_RESET` ❌ |
+
+`reset_cause()` was wrong in three of four events, in two different directions.
+
+> ⚠️ The third row is the one ambiguous case: on the very first run of new
+> firmware the magic word has never been written, so a soft reboot is
+> indistinguishable from a power-on and reads as `power`. It resolves itself from
+> the next boot onward, and only ever affects the first boot after a flash.
+
+> Because any hardware reset clears the scratch area, a boot counter kept there
+> reported `boot #1` after every power cycle and every RUN reset — useless for a
+> reboot investigation that is entirely about power and RUN events. The running
+> total therefore lives in flash; see *Counting boots* below.
+
+### Counting boots
+
+Two counters, in different tiers, answering different questions.
+
+| Counter | Tier | Question |
+| --- | --- | --- |
+| `boots` in `state.json` | 2 | How many times has this device come up and stayed up? |
+| Unstable count, scratch 3 | 1 | How many attempts since the last one that stuck? |
+
+The total has to be in flash because Tier 1 does not survive the resets under
+investigation. The write is safe because it happens **once per boot, and only
+after the device has been up for 60 seconds**.
+
+That gate is doing real work. A boot loop resetting every five seconds would be
+17,000 writes a day and a dead sector inside a week — the "never write on a
+timer" rule broken by accident rather than design. A looping device never reaches
+60 seconds, so it never writes at all.
+
+The consequence is that `boots` counts *stable* boots, not attempts. That is the
+more useful number, and the attempts are not lost: the Tier 1 counter carries
+them, costs nothing, and is cleared when a boot proves stable. A summary reading
+`boot #47 unstable=5` says the device has come up cleanly 47 times and has failed
+5 times since the last of them.
+
+### Verdicts
+
+| Verdict | Condition | Meaning |
+| --- | --- | --- |
+| `power` | cold + `POR/BOD` | Supply dropped, or first power-up |
+| `run-pin` | cold + `RUN` | RUN pin pulled low |
+| `warm-reset` | warm | Soft reboot or watchdog |
+
+> **Reading `warm-reset` on production.** Nothing there interacts with the REPL,
+> so spontaneous soft reboots do not occur — once B2 lands, a `warm-reset` on the
+> production unit means the watchdog bit. One exception to design around: B4 plans
+> a deliberate `machine.reset()` after repeated WiFi failures, which would look
+> identical. Intentional resets should set a marker in a spare scratch register
+> first, so a self-inflicted reset is never mistaken for a watchdog bite.
+>
+> Bench boot counts are not comparable: every Ctrl-C and re-run during development
+> increments the counter and logs a `warm-reset`.
+| `unknown` | cold, no flags | No evidence |
+
+### Register map
+
+| Address | Register | Use |
+| --- | --- | --- |
+| `0x40058008` | `WATCHDOG.REASON` | Advisory only |
+| `0x40058014` | `WATCHDOG.SCRATCH2` | Magic word `0x50444231` |
+| `0x40058018` | `WATCHDOG.SCRATCH3` | Boot counter |
+| `0x40064008` | `VREG_AND_CHIP_RESET.CHIP_RESET` | Hardware reset record |
+
+Scratch registers 4–7 carry the bootrom's reboot-to-BOOTSEL handshake, so only
+0–3 are safe. 2 and 3 are used, leaving 0 and 1 alone in case the port wants
+them.
+
+### Why this had to land before the watchdog
+
+Once B2 exists, a wedged network stack produces a reset that would be
+indistinguishable from the existing mystery unless the cause is recorded first.
+
+### Failure behaviour
+
+`read_reset_info()` never raises. Every read is individually guarded and the
+function returns a fully-populated dict regardless. Diagnostics must not be able
+to stop the device booting; a board that will not start is worse than one that
+cannot explain why it restarted.
+
+---
+
+## HTTP request layer
 
 All network calls go through one function. This is an enforced invariant, not a
 convention: `requests.*` appears nowhere else in the codebase, and the response
@@ -291,6 +520,7 @@ details are read.
 | File | Purpose |
 | --- | --- |
 | `main.py` | Firmware |
+| `board.py` | Pin assignments for this board. Copied from `boards/` at install time. |
 | `secrets.py` | Credentials and chat configuration. User-edited, never written by the firmware. |
 | `state.json` | Tier 2 runtime state. Firmware-written, never user-edited. |
 | `state.json.tmp` | Transient. Present only mid-write, or as a crash remnant. |
@@ -308,10 +538,11 @@ filesystem: 30 assertions covering first boot, write suppression, reboot
 persistence, corrupt and non-dict payloads, newer-version files, stale temp
 files and partial schemas. It runs under CPython with no board attached.
 
-`tests/test_reset.py` covers reset-cause capture: cold versus warm boot, the
-counter surviving a warm reset and restarting after a power cut, watchdog
-identification, unknown cause codes, and — most importantly — that a brownout
-and RUN-pin pickup produce visibly different output. 27 assertions.
+`tests/test_reset.py` covers reset diagnosis: cold versus warm boot, the counter
+surviving a warm reset and restarting after a hardware one, stale-flag handling,
+unknown cause codes, and the verdicts — using the exact values the bench unit
+reported, including the two cases where `reset_cause()` disagreed with the
+hardware. 35 assertions.
 
 `tests/test_boot.py` runs `main.py` under stub hardware modules and asserts the
 boot ordering: that the doorbell pin is configured before any network call, and

@@ -130,6 +130,10 @@ def _ticks_diff(a, b):
     return a - b
 
 
+def _ticks_add(a, b):
+    return a + b
+
+
 def install_stubs():
     sys.modules['rp2'] = _Mod(country=lambda c: events.append('country'))
     sys.modules['network'] = _Mod(WLAN=WLAN, STA_IF='STA_IF')
@@ -140,11 +144,12 @@ def install_stubs():
     sys.modules['ubinascii'] = _Mod(
         hexlify=lambda b, sep=None: b':'.join(b'%02x' % c for c in b))
     sys.modules['urequests'] = Requests()
+    sys.modules['board'] = _Mod(doorBellPin=16)
     sys.modules['secrets'] = _Mod(secrets={
         'ssid': 'net', 'pw': 'pw', 'botToken': 'TOKEN', 'telegramDmUid': '-1001',
     })
     sys.modules['time'] = _Mod(sleep=lambda s: None, ticks_ms=_ticks_ms,
-                               ticks_diff=_ticks_diff)
+                               ticks_diff=_ticks_diff, ticks_add=_ticks_add)
 
 
 def load_firmware():
@@ -174,7 +179,9 @@ check('wlan activated before LED created',
       events.index('wlan_active') < events.index('pin_LED'), True)
 check('startup message was attempted', 'http_post' in events, True)
 check('reset info captured at boot', ns['resetInfo'] is not None, True)
-check('boot counter started at 1', ns['resetInfo']['bootCount'], 1)
+check('boot number derives from flash', ns['bootNumber'], 1)
+check('nothing persisted before the device proves stable',
+      os.path.exists('state.json'), False)
 check('isStartup cleared after announcing', ns['isStartup'], False)
 
 # --- 2. The actual B3 regression: startup send fails -----------------------
@@ -208,7 +215,33 @@ check('second announce carries the reconnect text',
       sent[1].startswith(ns['reconnectText']), True)
 check('announcements carry the reset summary', 'Reset: boot #' in sent[0], True)
 
-# --- 5. Socket released even when the send fails ---------------------------
+# --- 5. Board definition is mandatory --------------------------------------
+saved_board = sys.modules.pop('board')
+try:
+    load_firmware()
+    check('missing board.py refuses to run', False, True)
+except ImportError as e:
+    check('missing board.py refuses to run', 'board.py' in str(e), True)
+finally:
+    sys.modules['board'] = saved_board
+
+sys.modules['board'] = _Mod()          # present but empty
+try:
+    load_firmware()
+    check('incomplete board.py refuses to run', False, True)
+except ValueError as e:
+    check('incomplete board.py names the missing pin', 'doorBellPin' in str(e), True)
+finally:
+    sys.modules['board'] = saved_board
+
+sys.modules['board'] = _Mod(doorBellPin=18)
+del events[:]
+ns = load_firmware()
+check('board.py drives the pin number', 'pin_18' in events, True)
+check('no hardcoded pin fallback', 'pin_16' in events, False)
+sys.modules['board'] = saved_board
+
+# --- 6. Socket released even when the send fails ---------------------------
 del events[:]
 Requests.raise_oserror = False
 ns = load_firmware()
