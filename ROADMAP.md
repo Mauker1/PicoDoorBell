@@ -154,8 +154,13 @@ Requirements:
 
 ### B2 — Watchdog — **P0**
 `machine.WDT`, fed from the main loop. Timeout must accommodate **both** a slow TLS
-handshake (~8 s) **and** a worst-case flash sector erase. Budget generously and *measure*
-rather than guess.
+handshake (~8 s) **and** a worst-case flash sector erase.
+
+> **Constraint:** the RP2040 watchdog maxes out at roughly **8.3 s**. That is tight against
+> a TLS handshake plus an erase, so this needs *measured* numbers, not a comfortable margin.
+> Time a real `sendMessage` round trip on the bench before choosing a value. If the
+> measurement leaves no headroom, the watchdog has to be fed from inside the request path
+> rather than only at the top of the loop.
 
 A wedged cyw43 stack currently requires someone to physically power-cycle the unit.
 
@@ -397,6 +402,33 @@ frequency rather than a clean level.
 Interacts directly with B1's debounce parameters. Decide: solve in software (pulse-train
 coalescing) or recommend an RC stretcher on the opto output.
 
+### G6 — RUN pin noise immunity — **P1**
+Fit **100 nF from RUN to GND**, as close to the pin as layout allows, plus a **10 kΩ
+pull-up from RUN to 3V3**.
+
+The RP2040's internal RUN pull-up is weak (~50 kΩ), leaving a high-impedance node with a
+length of wire attached and little noise immunity.
+
+> **Note on evidence.** This item was originally justified by the observation that re-mating
+> the reset connector rebooted the board. That observation has since been set aside as an
+> artifact of connector travel — see hardware queue item 6 — and is *not* evidence for
+> electromagnetic pickup. G6 remains worth doing as standard practice for a RUN line with
+> wire attached, but it is **precautionary**: nothing currently confirms RUN as the cause,
+> and C4 should decide whether it justifies a board revision.
+
+The capacitor gives roughly a 5 ms time constant against the internal pull-up: long enough
+to swallow a transient, short enough not to interfere with the button or startup. The
+external pull-up lowers the node impedance about 5×, so a given injected charge moves the
+voltage far less. Together they are meaningfully better than either alone.
+
+Prototype on protoboard first, then a carrier board revision. Also check whether the reset
+cable runs near the doorbell wiring or mains — rerouting may help as much as the capacitor.
+
+> This establishes that the RUN line *can* be disturbed trivially. It does not yet prove
+> the mains-switching reboots share that mechanism: plugging a connector is a physical
+> disturbance, a light switch is an electromagnetic one. C4 closes that gap — `chip=RUN` on
+> a reboot coinciding with a light switch is the confirmation.
+
 ### G4 — Pico 2 W support — **P3**
 Verify and document. It is the board most people would buy today.
 
@@ -500,6 +532,32 @@ directly), and a rollback path if the new build fails to boot.
 Deliberately **not** in Phase 1. An OTA path that can brick the device is worse than no OTA
 path, and the rollback story depends on C4's reset-cause detection to know a new build
 failed. Sequence it after C4 and B2 are proven on hardware.
+
+---
+
+## K. Platform tracking
+
+### K1 — Adopt `machine.mem_backup()` for Tier 1 — **P3**
+C4 writes the boot counter and magic word into watchdog scratch registers via raw
+`machine.mem32`, using a register map taken from the datasheet and not yet confirmed on
+hardware. MicroPython v1.29.0 adds `machine.mem_backup()`, a supported API for
+hard-reset-surviving memory on rp2 and six other ports, returning a writable memoryview.
+
+Adopting it would remove our dependence on an unverified register map. Two constraints:
+
+- **Version gating.** The project targets other people's boards, many on older builds, so
+  this has to be runtime-detected — use `mem_backup()` when present, fall back to `mem32`
+  otherwise — rather than a hard requirement.
+- **Possible conflict.** If `mem_backup()` is backed by the scratch registers C4 already
+  uses, the two will collide on any build that has it. Verify before upgrading either board
+  past v1.28.
+
+Blocked on the firmware upgrade, which is itself blocked on identifying the reboot cause.
+
+### K2 — Track rp2 port improvements — **P4**
+v1.29.0 brings roughly a 10% rp2 performance gain and fixes for threads, lightsleep and
+UART IRQ latency. The lightsleep fixes are relevant to G5 and the future battery build.
+Nothing to do until the upgrade happens; recorded so it is not rediscovered later.
 
 ---
 
@@ -620,9 +678,42 @@ persisting state — the exact failure class this entire refactor exists to elim
 
 Open items for the bench unit, none yet answered:
 
-1. **MicroPython version parity** between bench and production. Reflash both if needed, then
-   record the target version in `ARCHITECTURE.md`. The `ujson`/`uos` fallback exists because
-   of the v1.20 boundary, and the littlefs assumption is version-dependent.
+1. ✅ **MicroPython version parity — done.** Both boards now run **v1.23.0** (2024-06-02).
+   The prototype was brought up from v1.19.1 to match production, not the reverse:
+   production is the instrument for the reboot dataset, and reflashing it would have reset
+   an uncollected baseline while adding a second changed variable alongside C4.
+
+   Side effect: flashing the `.uf2` erased the prototype's filesystem, so it starts with no
+   `state.json`. That is a clean first-boot condition for testing I2 — expect
+   `cause=PWRON_RESET`, `boot #1`, `cold`, and no state file until something writes one.
+
+   This also **retires firmware age as a reboot hypothesis**. It was raised on the
+   assumption production might be the older board. June 2024 is recent, and the early Pico W
+   lwIP problems were fixed well before it. Remaining candidates: supply sag and RUN-pin
+   pickup.
+
+   The `ujson`/`uos` fallback stays regardless — v1.23.0 provides both names, but the
+   project targets other people's boards too.
+
+   **Not upgrading to the current release yet.** v1.29.0 (2026-08-24) is the latest, with
+   v1.28.0 (2026-04-06) before it. Both are declined for now:
+
+   - Production is the measuring instrument for an unresolved fault with no baseline and no
+     confirmed cause. Changing the runtime adds a variable to an experiment that already has
+     too many — if the reboots stop, the cause would be unattributable between firmware, the
+     disconnected cable, and chance.
+   - v1.29.0 is days old and a large release (a new port, a new `machine.mem_backup()` API
+     across seven ports). A wall-mounted appliance wants a version with field exposure.
+
+   **Sequence:** prototype to v1.23.0 now for parity → identify the reboot cause → then
+   upgrade as a deliberate experiment, prototype first with a multi-day soak, production
+   after. Prefer v1.28.0 or a v1.29.x point release over v1.29.0 at that time.
+
+   ⚠️ **Check before any upgrade past v1.28:** v1.29.0 adds `machine.mem_backup()`, which
+   exposes hard-reset-surviving memory on rp2. If it is backed by the same watchdog scratch
+   registers C4 writes to, MicroPython may use or clear them. The magic-word check would
+   catch it — every boot would report as cold — but that is a silent degradation, not an
+   error. See K1.
 2. **Prototype doorbell input pin** — confirm it is GP16. If the boards differ, that is an
    argument for pulling `E1` forward so the pin is configuration rather than a constant.
 3. **Filesystem type** — `sys.implementation` and `os.statvfs('/')`. Settles I4 and the
@@ -635,10 +726,79 @@ Open items for the bench unit, none yet answered:
 5. **Charger module load-sharing.** Whether the load runs from USB while charging, or hangs
    off BAT+ with the cell charging and discharging simultaneously and held near 4.2 V.
    Affects cell longevity and what "on battery" means as a test condition.
-6. **RUN pin pickup.** Disconnect the reset button at the *Pico* end (not the button end —
-   the lead itself is the antenna) and watch for reboots. RUN has an internal pull-up, so
-   leaving it floating is safe. On the production carrier the PCB trace remains regardless,
-   so only the protoboard can eliminate it fully. A 100 nF cap from RUN to GND close to the
-   pin is the standard mitigation if this is confirmed.
-7. **USB adapter quality on production.** A one-minute swap for a known-good supply is the
-   cheapest test of the brownout hypothesis and needs no hardware revision.
+6. 🔬 **RUN pin pickup — elimination test running on production.** The external reset cable
+   is disconnected on the production unit, firmware unchanged, so the board carries exactly
+   one changed variable. Record the disconnect date and the prior reboot rate — "none since"
+   only means something against a baseline. If the trigger is reproducible (switching the
+   offending light), test actively rather than waiting.
+
+   **A negative result does not exonerate RUN:** the carrier board's PCB trace to the reset
+   connector remains, so this shortens the antenna rather than removing it. Only the
+   protoboard can eliminate it fully.
+
+   **No positive control.** Deliberate attempts to provoke a reboot by switching the light,
+   with the cable *connected*, produced nothing. An elimination test needs the fault to be
+   demonstrable in the known-bad configuration first, so "no reboots with the cable off"
+   would currently be uninterpretable. A handful of failed attempts is weak evidence either
+   way: at a 5% per-event rate, twenty attempts still miss entirely 36% of the time.
+
+   **Watch for recall bias in the original correlation.** A reboot immediately after a
+   switch flip is memorable; one at 3am is not. Telegram timestamps every startup message,
+   so reboot times are already recorded even before C1 lands — enough to check the
+   correlation against a written log of switching events rather than against memory.
+
+   **Characterise the load.** Inductive and electronically-ballasted loads (compressors,
+   pumps, LED and fluorescent drivers) produce far worse switching transients than a
+   resistive lamp. If the trigger is an LED fixture, driver inrush is a likelier mechanism
+   than the switch contact.
+
+   **The connector observation is a red herring. Set it aside.**
+
+   Mating *and* un-mating the reset connector both reset the board, most of the time,
+   without the button being pressed. Two hypotheses were built on this and both failed:
+
+   - *Poor noise immunity on a high-impedance RUN node* — withdrawn. Symmetric behaviour in
+     both directions of travel is not what charge injection looks like.
+   - *Marginal contact, disturbed by vibration* — ruled out by direct test. Knocking the
+     wall, the casing, the carrier board and the connector itself, and moving the seated
+     connector side to side, produced **no** reboot. The contact is sound.
+
+   What remains is unremarkable: while pins are making or breaking, RUN is briefly shorted or
+   left floating, and the board resets. That requires the connector to be *in motion*, which
+   never happens in service. The observation therefore says nothing about the in-service
+   reboots in either direction, and no further hypotheses should be built on it.
+
+   **Guessing is exhausted; measure instead.** C4 answers the question directly:
+   `chip=POR/BOD` means the supply dropped, `chip=RUN` means the RUN line was pulled low.
+   One labelled reboot settles what three rounds of hypothesis have not.
+
+   Remaining candidates: **supply sag** (leading by elimination, and still untested — the
+   production USB adapter has never been swapped) and **EM pickup on RUN** (possible, no
+   evidence either way).
+
+   The running disconnect test loses most of its value now that marginal contact is ruled
+   out, but it costs only the reset button, so it can continue until C4 is deployed.
+
+   **Plan: keep the cable disconnected for now, then reconnect it when C4 reaches
+   production.** Reset-cause capture is purely observational — it labels reboots, it cannot
+   cause or prevent them — so it does not confound anything. But it changes which experiment
+   is worth running: direct measurement beats elimination. One labelled reboot reading
+   `chip=RUN` or `chip=POR/BOD` settles the question, where weeks of silence against no
+   baseline does not. With no positive control, silence is precisely what would otherwise
+   need interpreting.
+
+   C4 waits on bench verification rather than on this experiment, because it arrives
+   alongside A3/A5/B3/I2, which *do* change behaviour.
+7. ✅ **Test target chat type — resolved.** Production is a **group**, and the bench target
+   will be a group too. Groups deliver `message` while channels deliver `channel_post`, and
+   A1 has not landed — the current parser handles only `channel_post`. A test channel would
+   have passed while production quietly failed on `/log`.
+
+   Consequence: **`/log` is expected to be broken on both units until A1 lands.** Every
+   update in a group currently raises `KeyError`, which the main loop's catch-all turns into
+   a spurious `wlan.disconnect()` and a "back online" message. Do not read that as a new
+   fault.
+8. **USB adapter quality on production.** A one-minute swap for a known-good supply is the
+   cheapest test of the brownout hypothesis and needs no hardware revision. **Raised in
+   priority** by the failed reproduction attempt: a cheap adapter sagging under a mains
+   transient fits the symptom as well as RUN pickup does, and remains untested.

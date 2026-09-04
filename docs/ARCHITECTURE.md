@@ -8,6 +8,28 @@ setup — and should stay free of internals.
 
 ---
 
+## Target platform
+
+| | Version | Notes |
+| --- | --- | --- |
+| Production unit | MicroPython v1.23.0 (2024-06-02), Pico W | Direct USB power, no battery |
+| Bench unit | MicroPython v1.23.0, Pico W | Battery module on VSYS, jumper-switchable to direct USB |
+
+Both boards run the same version. The bench unit was matched to production
+rather than the reverse: production is the instrument for the reboot
+investigation, and reflashing it would reset a baseline that has not yet been
+collected.
+
+v1.23.0 is deliberately behind the current release. See `ROADMAP.md` section K
+for why, and for the `machine.mem_backup()` conflict to check before any
+upgrade.
+
+The `ujson`/`uos` import fallbacks stay regardless. v1.23.0 provides both names,
+but the project targets other people's boards too, and MicroPython only exposed
+the u-prefixed names before v1.20.
+
+---
+
 ## Design principle
 
 The failure mode this firmware exists to avoid is **silent failure**: a device
