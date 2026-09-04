@@ -34,6 +34,37 @@ recovery or a visible alert. Everything else is correctness and polish.
 | 🔬 | Landed, awaiting hardware verification |
 | — | Not started |
 
+### Bench validation complete — cleared for production
+
+Verified end to end on the bench unit at v1.23.0: boot ordering, reset diagnosis across all
+four paths, the per-revision board file, the request layer, the flash write and its stability
+gate, the schema, and a doorbell press delivering to Telegram.
+
+Promotion steps:
+
+1. Back up production's current `main.py` on the device under another name.
+2. Copy `boards/board_v1_2.py` to the device as `board.py` (GP16). Without it the firmware
+   refuses to start — intended, but not mid-install.
+3. Leave production's `secrets.py` alone.
+4. Flash `main.py`.
+5. Verify `Doorbell input ready on GP16`, a startup message in the production group, and
+   `state.json` appearing after 60 s with `boots: 1`.
+6. Test a real ring.
+7. **Reconnect the RUN cable.** With C4 deployed, direct measurement beats elimination.
+
+Reading the reboot data:
+
+| Verdict | Meaning | Next step |
+| --- | --- | --- |
+| `power` | Supply — brownout or dip | Swap the USB adapter (queue item 9) |
+| `run-pin` | RUN line | Bisect: lift the on-board button |
+| `warm-reset` | Watchdog or soft reset | Unexpected before B2 exists |
+| `unstable=N` | Boot loop, N attempts since the last stable start | Investigate before it recurs |
+
+Known cosmetic issues, not faults: the "first time" wording above the boot counter (C6), and
+spurious reconnect messages if anyone posts in the group, since `/log` parsing is
+`channel_post`-only until A1.
+
 **Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · ✅ C5 · — B1 · — B2 · — B6 · — C3
 
 Everything marked ✅ has host-side test coverage but has **not yet run on real
@@ -304,6 +335,20 @@ itself a signal.
 Pair with a Tier 1 **unstable-boot counter**: incremented at boot, cleared when the 60
 seconds elapse. Free, no flash, and it makes a boot loop visible in the next heartbeat
 instead of invisible.
+
+### C6 — Fix the startup message wording — **P3, trivial**
+`startupText` reads "I am online for the first time! Bot started!" but `isStartup` is a RAM
+flag, so it is `True` on every boot — every restart claims to be the first.
+
+Harmless until C5, which now prints a boot counter directly beneath it. "For the first time"
+above `boot #47` is self-contradictory.
+
+The flag's actual job is distinguishing the boot-time announcement from a post-reconnect one
+*within a session*, which the wording does not reflect. Reword to "Bot started." and
+"Reconnected.", and let the reset line carry the boot number.
+
+Fold into whichever commit next touches those strings, or into E1 when the message text moves
+to configuration.
 
 ### C3 — Heartbeat — **P0**
 Periodic "alive" ping carrying uptime, free memory, RSSI, alert count and flash write count.
@@ -742,7 +787,7 @@ This makes wear **observable** rather than theoretical. If the counter climbs fa
 expected, there is a bug in the write discipline — and it surfaces in month one instead of
 year three.
 
-### I4 — Filesystem verification — **P3**
+### ✅ I4 — Filesystem verification — **P3**
 Confirm whether the build uses littlefs2 or FAT, and record it in the troubleshooting
 section. It changes the endurance envelope by an order of magnitude.
 
@@ -959,8 +1004,14 @@ Open items for the bench unit, none yet answered:
    per-revision file in `boards/`. `main.py` holds no pin defaults and refuses to start
    without a complete definition — an earlier proposal to put the pin in `secrets.py` was
    rejected, correctly, because a GPIO number is not a secret. See `ARCHITECTURE.md`.
-3. **Filesystem type** — `sys.implementation` and `os.statvfs('/')`. Settles I4 and the
-   atomic-rename claim in `ARCHITECTURE.md`.
+3. ✅ **Filesystem type — littlefs2.** `os.statvfs('/')` returns 4096-byte blocks, 212
+   total, 202 free. The block size matches the flash sector, which is characteristic of
+   littlefs2 and consistent with the rp2 port's long-standing default. The atomic-rename
+   guarantee in `ARCHITECTURE.md` holds. Strong inference rather than proof; the decisive
+   test is case sensitivity, since littlefs distinguishes `AAA` from `aaa` and FAT does not.
+
+3c. ✅ **Memory baseline — 178,480 bytes free** after boot with WiFi up. Reference point for
+   the leak watch.
 
 3b. ✅ **Ring pulse width — measured.** Terminal 04 idles at ground and goes high to 5 V for
    about two seconds. Clean digital square wave. See G7 for what follows; B1 is unblocked.

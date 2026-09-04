@@ -705,8 +705,12 @@ def mark_boot_stable():
         scratch_write(SCRATCH_UNSTABLE_IDX, 0)
     except Exception:
         pass
-    append_to_log('Boot ' + str(bootNumber) + ' stable after ' +
-                  str(BOOT_STABLE_MS // 1000) + 's')
+    message = ('Boot ' + str(bootNumber) + ' stable after ' +
+               str(BOOT_STABLE_MS // 1000) + 's')
+    # Printed as well as logged: this is the only flash write in normal
+    # operation, and a silent one is hard to confirm while validating.
+    print(message)
+    append_to_log(message)
 
 def boot():
     """Bring the device up, hardware first.
