@@ -95,7 +95,7 @@ Known cosmetic issues, not faults: the "first time" wording above the boot count
 spurious reconnect messages if anyone posts in the group, since `/log` parsing is
 `channel_post`-only until A1.
 
-**Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · ✅ C5 · 🔬 B1 · — B2 · — B6 · — C3
+**Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · ✅ C5 · 🔬 B1 · 🔬 B2 · — B6 · — C3
 
 Everything marked ✅ has host-side test coverage but has **not yet run on real
 hardware**. See [Open questions](#open-questions) for what that gates.
@@ -248,7 +248,7 @@ the count in the heartbeat (C3).
 > be over-engineering. The point is only to avoid a structure that would later have to be
 > undone.
 
-### B2 — Watchdog — **P0**
+### ✅ B2 — Watchdog — **P0, awaiting hardware test**
 `machine.WDT`, fed from the main loop. Timeout must accommodate **both** a slow TLS
 handshake (~8 s) **and** a worst-case flash sector erase.
 
@@ -889,7 +889,7 @@ Nothing to do until the upgrade happens; recorded so it is not rediscovered late
 ## Sequencing
 
 ### Phase 1 — Stop the bleeding
-✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → ✅ `C4` → ✅ `C5` → 🔬 `B1` → `B2` → `B6` → `C3`
+✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → ✅ `C4` → ✅ `C5` → 🔬 `B1` → 🔬 `B2` → `B2` → `B6` → `C3`
 
 **Hardware checkpoint after B3**, before B1. Everything landed so far is host-tested only,
 and B1 changes interrupt behaviour — the hardest thing to debug with unverified changes

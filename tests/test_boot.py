@@ -91,6 +91,24 @@ class WLAN:
         return b'\xde\xad\xbe\xef\x00\x01'
 
 
+class WDT:
+    """Records arming and feeding; never actually bites."""
+    instances = []
+    available = True
+
+    def __init__(self, timeout=None):
+        if not WDT.available:
+            raise ValueError('WDT unavailable')
+        self.timeout = timeout
+        self.feeds = 0
+        WDT.instances.append(self)
+        events.append('wdt_armed')
+
+    def feed(self):
+        self.feeds += 1
+        events.append('wdt_fed')
+
+
 class Mem32:
     """Emulates machine.mem32 as a sparse address space."""
 
@@ -156,7 +174,7 @@ def _ticks_add(a, b):
 def install_stubs():
     sys.modules['rp2'] = _Mod(country=lambda c: events.append('country'))
     sys.modules['network'] = _Mod(WLAN=WLAN, STA_IF='STA_IF')
-    sys.modules['machine'] = _Mod(Pin=Pin, mem32=mem32,
+    sys.modules['machine'] = _Mod(Pin=Pin, mem32=mem32, WDT=WDT,
                                   reset_cause=lambda: machine_reset_cause[0],
                                   PWRON_RESET=1, HARD_RESET=2, WDT_RESET=3,
                                   DEEPSLEEP_RESET=4, SOFT_RESET=5)
@@ -167,7 +185,9 @@ def install_stubs():
     sys.modules['secrets'] = _Mod(secrets={
         'ssid': 'net', 'pw': 'pw', 'botToken': 'TOKEN', 'telegramDmUid': '-1001',
     })
-    sys.modules['time'] = _Mod(sleep=lambda s: None, ticks_ms=_ticks_ms,
+    sys.modules['time'] = _Mod(sleep=lambda s: None,
+                               sleep_ms=lambda ms: None,
+                               ticks_ms=_ticks_ms,
                                ticks_diff=_ticks_diff, ticks_add=_ticks_add)
 
 
@@ -190,6 +210,12 @@ Requests.raise_oserror = False
 ns = load_firmware()
 
 check('doorbell pin was configured', ns['doorBellInput'] is not None, True)
+check('watchdog armed during boot', 'wdt_armed' in events, True)
+check('watchdog armed after the pin, before networking',
+      events.index('pin_16') < events.index('wdt_armed') < events.index('http_post'),
+      True)
+check('timeout stays under the RP2040 ceiling',
+      ns['WDT_TIMEOUT_MS'] < 8300, True)
 check('LED was configured', ns['led'] is not None, True)
 pin_at = events.index('pin_16')
 net_at = events.index('http_post')

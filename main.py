@@ -114,6 +114,26 @@ lastLogCheck = startupTime
 logCheckInterval = 60000
 logMaxSize = 10000
 
+####################################################################################
+# B2 watchdog.
+#
+# The RP2040 watchdog cannot exceed roughly 8.3 s, which is uncomfortably close to
+# what one loop pass can legitimately take. Measured on hardware: a Telegram round
+# trip is 1-2 s, and a worst-case pass can hold a send, a getUpdates and a flash
+# sector erase.
+#
+# The margin is therefore bought by feeding from inside the blocking work rather
+# than only at the top of the loop -- see feed_watchdog() call sites. B1 was a
+# prerequisite: with its 5 s post-press sleep still in place, a press followed by
+# a getUpdates could pass nine seconds without a feed.
+#
+# Once armed, an RP2040 watchdog cannot be disarmed.
+####################################################################################
+
+WDT_TIMEOUT_MS = 8000
+
+wdt = None
+
 # Delays
 loopDelay = 1
 
@@ -219,6 +239,8 @@ def do_request(method, url, payload=None):
     callers branch on outcome instead.
     """
     response = None
+    # A handshake can run into seconds; the watchdog must not bite mid-request.
+    feed_watchdog()
     try:
         if method == 'POST':
             response = requests.post(url, json=payload)
@@ -245,6 +267,51 @@ def do_request(method, url, payload=None):
                 pass
         # urequests leaks sockets quickly without this on a 264 KB part.
         gc.collect()
+        feed_watchdog()
+
+def arm_watchdog():
+    """Start the watchdog. Irreversible on this chip.
+
+    Armed after hardware and state are up but before networking, because a
+    wedged cyw43 stack is the failure this is chiefly for. Not armed any
+    earlier: error_halt() blinks forever by design, and a watchdog would
+    turn a configuration mistake into a silent reset loop instead of a
+    visible fault.
+    """
+    global wdt
+    if wdt is not None:
+        return
+    try:
+        wdt = machine.WDT(timeout=WDT_TIMEOUT_MS)
+        message = 'Watchdog armed at ' + str(WDT_TIMEOUT_MS) + 'ms'
+    except Exception as e:
+        # An unguarded device still answers the door. One that refuses to
+        # start does not.
+        message = 'Watchdog unavailable: ' + str(e)
+    print(message)
+    append_to_log(message)
+
+def feed_watchdog():
+    if wdt is not None:
+        try:
+            wdt.feed()
+        except Exception:
+            pass
+
+def sleep_fed(seconds):
+    """Sleep without letting the watchdog bite.
+
+    Any wait longer than the timeout has to be broken up. The 10 s grace
+    period after an error was the clearest example: left whole, it would
+    have reset the device every time anything went wrong.
+    """
+    remaining = int(seconds * 1000)
+    while remaining > 0:
+        feed_watchdog()
+        step = 500 if remaining > 500 else remaining
+        time.sleep_ms(step)
+        remaining -= step
+    feed_watchdog()
 
 # Send a telegram message to a given user id
 def send_message (chatId, message):
@@ -666,7 +733,7 @@ def connect_wifi():
             print(message)
             led.off()
             wlan.connect(ssid, pw)
-            time.sleep(3)
+            sleep_fed(3)
 
 def announce_startup():
     """Tell the chat we are up. Best effort -- never fatal.
@@ -851,6 +918,9 @@ def mark_boot_stable():
         return
     bootRecorded = True
     state_set('boots', bootNumber)
+    # A sector erase stalls the CPU for tens of milliseconds, occasionally
+    # more, and runs with interrupts disabled.
+    feed_watchdog()
     # Attempts since the last stable boot are now history.
     try:
         scratch_write(SCRATCH_UNSTABLE_IDX, 0)
@@ -903,6 +973,9 @@ def boot():
     print(summary)
     append_to_log(summary)
 
+    # Everything that could legitimately hang from here on is network work.
+    arm_watchdog()
+
     try:
         connect_wifi()
         announce_startup()
@@ -928,17 +1001,25 @@ while True:
             lastLogCheck = time.ticks_ms()
         
         mark_boot_stable()
+        feed_watchdog()
 
         # Record when this pass ran, so was_unpollable() can tell whether a
         # ring landed in a gap the old polling loop could not have covered.
         prevPassTicks = lastPassTicks
         lastPassTicks = time.ticks_ms()
 
-        time.sleep(loopDelay)
+        sleep_fed(loopDelay)
         
     
     except KeyboardInterrupt:
         print('KeyboardInterrupt')
+        if wdt is not None:
+            # Nothing can disarm an RP2040 watchdog. Leaving the loop stops
+            # the feeding, so the board resets shortly. That is correct in
+            # service -- an exited loop is a dead doorbell -- but it is worth
+            # saying out loud on the bench.
+            print('Watchdog is armed: expect a reset within ' +
+                  str(WDT_TIMEOUT_MS // 1000) + 's')
         break
     except Exception as e:
         print(e)
@@ -946,7 +1027,8 @@ while True:
         wlan.disconnect()
         append_to_log('WiFi disconnected: ' + str(e))
         print(log)
-        # Grace period.
-        time.sleep(10)
+        # Grace period, in fed slices. Left as a single sleep(10) this
+        # would outlast the watchdog and reset the board on every error.
+        sleep_fed(10)
         led.on()
         pass

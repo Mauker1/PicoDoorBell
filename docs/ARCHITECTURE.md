@@ -560,6 +560,68 @@ the doorbell is wired today.
 
 ---
 
+## Watchdog
+
+`machine.WDT` at 8000 ms, armed during boot. **An RP2040 watchdog cannot be
+disarmed once started.**
+
+### The margin is thin, and bought deliberately
+
+The chip's ceiling is roughly 8.3 s. Measured worst case for one loop pass:
+
+| Step | Worst case |
+| --- | --- |
+| `send_message` after a ring | 2 s |
+| `read_message` on the 60 s tick | 2 s |
+| Flash sector erase at the stability gate | ~0.3 s |
+| `loopDelay` | 1 s |
+
+That fits, but not by enough to trust on a bad day. So the watchdog is fed from
+**inside** the blocking work — before and after every request, after the flash
+write, and in slices during every wait — rather than only at the top of the loop.
+
+**B1 was a prerequisite.** With its 5 s post-press sleep still in place, a ring
+followed by a `getUpdates` could pass nine seconds with no feed, and the watchdog
+would have reset the board during ordinary operation.
+
+### `sleep_fed()`
+
+Any wait longer than the timeout resets the board. The 10 s grace period after an
+error was exactly that: left as a single `time.sleep(10)`, arming the watchdog
+would have turned every transient fault into a reboot. `sleep_fed()` breaks waits
+into 500 ms slices and feeds between them.
+
+A test walks the AST and fails if any raw `time.sleep()` with a constant argument
+of 8 s or more survives. The short ones that remain — LED blinks, and
+`error_halt()` — are either brief or run before the watchdog is armed.
+
+### When it is armed
+
+After hardware and state are up, before networking. Two reasons:
+
+- A wedged cyw43 stack is the failure this chiefly exists for, so the network
+  phase must be covered.
+- Not earlier, because `error_halt()` blinks forever by design. A watchdog there
+  would convert a visible configuration fault into a silent reset loop.
+
+`connect_wifi()` feeds while retrying, so a genuinely unreachable router does not
+cause a reset — resetting would not fix it. The watchdog is for a wedged stack,
+not an absent network.
+
+### If the watchdog cannot be created
+
+Logged, and boot continues. An unguarded device still answers the door; one that
+refuses to start does not.
+
+### Consequence on the bench
+
+Ctrl-C leaves the main loop, so nothing feeds, and the board resets a few seconds
+later. That is correct in service — an exited loop is a dead doorbell — but it
+means development interruptions now produce a reset and a `warm-reset` verdict.
+The firmware says so on the way out.
+
+---
+
 ## HTTP request layer
 
 All network calls go through one function. This is an enforced invariant, not a
