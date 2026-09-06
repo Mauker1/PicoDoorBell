@@ -258,7 +258,10 @@ check('first announce carries the startup text',
       sent[0].startswith(ns['startupText']), True)
 check('second announce carries the reconnect text',
       sent[1].startswith(ns['reconnectText']), True)
-check('announcements carry the reset summary', 'Reset: boot #' in sent[0], True)
+check('the startup message carries the reset summary',
+      'Reset: boot #' in sent[0], True)
+check('the reconnect message does not',
+      'Reset: boot #' in sent[1], False)
 
 # --- 5. Board definition is mandatory --------------------------------------
 saved_board = sys.modules.pop('board')

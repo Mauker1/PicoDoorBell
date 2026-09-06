@@ -91,9 +91,11 @@ Reading the reboot data:
 | `warm-reset` | Watchdog or soft reset | Unexpected before B2 exists |
 | `unstable=N` | Boot loop, N attempts since the last stable start | Investigate before it recurs |
 
-Known cosmetic issues, not faults: the "first time" wording above the boot counter (C6), and
-spurious reconnect messages if anyone posts in the group, since `/log` parsing is
-`channel_post`-only until A1.
+Known cosmetic issue, not a fault: the "first time" wording above the boot counter (C6).
+
+*(An earlier note here warned about spurious reconnects when anyone posts in the chat. That
+assumed a group. It is a channel, so `channel_post` parsing is correct and the warning does
+not apply.)*
 
 **Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · ✅ C5 · 🔬 B1 · 🔬 B2 · — B6 · — C3
 
@@ -110,7 +112,11 @@ across categories, not the categories top to bottom. See
 
 ## A. Bug fixes
 
-### A1 — Universal update parsing — **P1**
+### A1 — Universal update parsing — **P1, portability**
+> **Not a live bug here.** This deployment uses a channel, so the existing `channel_post`
+> parser is correct. A1 matters for the DM and group paths the README documents, and for the
+> non-text updates any chat type can deliver.
+
 Replace `result['channel_post']` with a resolver walking the known update keys in order:
 `message`, `edited_message`, `channel_post`, `edited_channel_post`. Return `None` for
 anything else (`my_chat_member`, `callback_query`, service updates) rather than raising.
@@ -120,9 +126,10 @@ sticker, join event) must be skipped, not crash.
 
 This is the change that makes DM / group / supergroup / channel work from one code path.
 
-> **Why it matters:** `channel_post` is emitted *only* for channels. In a group, every
-> single update currently raises `KeyError`, which propagates to the catch-all handler and
-> triggers a spurious `wlan.disconnect()`.
+> **Why it matters:** `channel_post` is emitted *only* for channels. In a group or a DM,
+> every update raises `KeyError`, which propagates to the catch-all handler and triggers a
+> spurious `wlan.disconnect()`. Even in a channel, a photo or sticker post has no `text` key
+> and does the same.
 
 ### A2 — Command matching that survives group conventions — **P1**
 Parse as `text.strip().split()[0].split('@')[0]`, compared case-insensitively, so `/log`,
@@ -304,6 +311,23 @@ Classify: network errors → retry; parse errors → log and continue; `MemoryEr
 `gc.collect()`, then reset if it recurs.
 
 ### B6 — Offline event queue — **P0**
+> **Observed on the bench, not hypothetical.** A press produced no notification: the send
+> hung, the watchdog bit at 8 s, the board reset, and the ring was gone. `process_input()`
+> marks a ring delivered — increments the counter, sets the lockout — *before* calling
+> `send_message()`, and ignores the outcome. Two consequences B6 must cover:
+>
+> - **A failed send must re-queue**, not silently drop. The return value is already there
+>   and already unused.
+> - **A ring latched but not yet sent is lost to a reset.** The RAM queue does not survive
+>   the watchdog, and a watchdog bite is not a deliberate reset, so the Tier 3 snapshot as
+>   specified would not fire either. Either snapshot on latch when a send is in flight, or
+>   accept the window and document it.
+>
+> Root cause of the hang: `urequests` sets no socket timeout, so a half-open TLS connection
+> blocks indefinitely. Nothing can feed the watchdog during a single blocking call. The
+> reset is correct behaviour — before B2 that hang would have wedged the device silently —
+> but the ring should survive it.
+
 Latch doorbell events with timestamps into a bounded **RAM** queue and flush on reconnect.
 Messages delivered late must be marked as delayed.
 
@@ -634,6 +658,19 @@ Two ways to measure, either is fine:
 
 While measuring, also capture **whether terminal 04 and the ED line assert simultaneously or
 with an offset**. That sets the correlation window G9 needs.
+
+### G10 — Confirm the TwinBus burst interval — **P2**
+Terminal 04 does **not** track the button: a ~6 s press produces one pulse, so the system
+debounces internally and emits its own fixed signal. That removes the risk of tuning
+`MIN_PULSE_MS` too high — a quick jab should still produce a full-width pulse.
+
+But a held button reportedly produces repeated bursts: tone, pause, tone. If the burst
+interval exceeds `ALERT_LOCKOUT_MS` (5 s), a visitor leaning on the button generates several
+notifications.
+
+No oscilloscope needed — the firmware is the instrument. `Doorbell ring, NNNNms` gives the
+width, and successive entries give the interval. Hold the real doorbell for fifteen seconds
+and read the log.
 
 ### G3 — Input signal conditioning — **P2**
 Document and handle the AC-bell case, where a single PC817 produces a pulse train at mains
@@ -1154,15 +1191,20 @@ Open items for the bench unit, none yet answered:
 
    C4 waits on bench verification rather than on this experiment, because it arrives
    alongside A3/A5/B3/I2, which *do* change behaviour.
-8. ✅ **Test target chat type — resolved.** Production is a **group**, and the bench target
-   will be a group too. Groups deliver `message` while channels deliver `channel_post`, and
-   A1 has not landed — the current parser handles only `channel_post`. A test channel would
-   have passed while production quietly failed on `/log`.
+8. ✅ **Test target chat type — resolved: a channel, not a group.** An earlier note here said
+   group; that was wrong and is corrected. Production is a Telegram **channel**.
 
-   Consequence: **`/log` is expected to be broken on both units until A1 lands.** Every
-   update in a group currently raises `KeyError`, which the main loop's catch-all turns into
-   a spurious `wlan.disconnect()` and a "back online" message. Do not read that as a new
-   fault.
+   This makes the existing code correct for this deployment. Channels deliver `channel_post`,
+   which is exactly what the parser handles, so **`/log` works** — as originally reported —
+   and only channel admins can post, so the unauthenticated-command concern in D3 is far
+   milder than it would be in a group.
+
+   It also explains the `?offset=X?chat_id=Y` URL working: Telegram tolerates it, and
+   `chat_id` was never a `getUpdates` parameter anyway.
+
+   **A1 is therefore portability work, not a bug fix.** The parser is right for a channel and
+   wrong for the DM and group paths the README documents, so it still matters for other
+   users — just not urgently for this installation.
 9. **USB adapter quality on production.** A one-minute swap for a known-good supply is the
    cheapest test of the brownout hypothesis and needs no hardware revision. **Raised in
    priority** by the failed reproduction attempt: a cheap adapter sagging under a mains

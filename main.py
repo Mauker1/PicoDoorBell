@@ -147,7 +147,7 @@ loopDelay = 1
 DEBOUNCE_MS = 50
 # A real ring holds terminal 04 high for about 2 s (measured). Anything
 # shorter than this is a transient, not a visitor.
-MIN_PULSE_MS = 400
+MIN_PULSE_MS = 150
 # One alert per ring. Must exceed the pulse width so a single ring cannot
 # produce two notifications.
 ALERT_LOCKOUT_MS = 5000
@@ -753,15 +753,18 @@ def announce_startup():
     boot before the doorbell input was ever configured.
     """
     global isStartup
-    # Carry the reset diagnosis into the chat. The reboots we are chasing
-    # happen on the production unit, not the bench, so the message is the
-    # only place the evidence reliably surfaces.
-    detail = '\n' + format_reset_info(resetInfo)
     if (isStartup):
-        outcome, status, body = send_message(chatId, startupText + detail)
+        # Carry the reset diagnosis into the chat. The reboots being chased
+        # happen on the production unit, not the bench, so this message is
+        # the only place the evidence reliably surfaces.
+        outcome, status, body = send_message(
+            chatId, startupText + '\n' + format_reset_info(resetInfo))
         isStartup = False
     else:
-        outcome, status, body = send_message(chatId, reconnectText + detail)
+        # Deliberately no reset summary. Nothing reset -- the network came
+        # back. Repeating the last boot's diagnosis here made a WiFi blip
+        # look like a reboot, which corrupts the very dataset C4 collects.
+        outcome, status, body = send_message(chatId, reconnectText)
     return outcome == REQUEST_OK
 
 def make_edge_handler(entry):
