@@ -288,8 +288,7 @@ def arm_watchdog():
         # An unguarded device still answers the door. One that refuses to
         # start does not.
         message = 'Watchdog unavailable: ' + str(e)
-    print(message)
-    append_to_log(message)
+    report(message)
 
 def feed_watchdog():
     if wdt is not None:
@@ -339,6 +338,17 @@ def read_message(chatId):
         print(result['channel_post']['text'] == logCommand)
         if (result['channel_post']['text'] == logCommand):
             print_log(chatId)
+
+def report(message):
+    """Log it and say it.
+
+    append_to_log() alone writes to a buffer nobody is watching. Several
+    events that only matter while someone is looking -- ring widths,
+    rejected transients, the stability write -- were invisible on the
+    console because of that.
+    """
+    print(message)
+    append_to_log(message)
 
 def append_to_log(message):
     global log
@@ -770,16 +780,27 @@ def make_edge_handler(entry):
     """
     def handler(pin):
         now = time.ticks_ms()
-        if time.ticks_diff(now, entry[IN_LAST_EDGE]) < DEBOUNCE_MS:
-            return
-        entry[IN_LAST_EDGE] = now
         if pin.value() == pressed:
+            # Opening edge. Debounced, so contact noise cannot restart a
+            # pulse already in progress.
+            if time.ticks_diff(now, entry[IN_LAST_EDGE]) < DEBOUNCE_MS:
+                return
+            entry[IN_LAST_EDGE] = now
             entry[IN_RISE] = now
             entry[IN_COMPLETE] = False
             entry[IN_PENDING] = True
-        elif entry[IN_PENDING]:
-            entry[IN_FALL] = now
-            entry[IN_COMPLETE] = True
+        else:
+            # Closing edge. Every edge updates the debounce reference, so
+            # a bounce back up immediately afterwards is rejected by the
+            # branch above rather than reopening the pulse.
+            entry[IN_LAST_EDGE] = now
+            if entry[IN_PENDING] and not entry[IN_COMPLETE]:
+                # Deliberately *not* gated by the debounce window: a pulse
+                # shorter than DEBOUNCE_MS would otherwise never close, and
+                # would sit latched until the stuck-input timeout instead of
+                # being reported as the transient it is.
+                entry[IN_FALL] = now
+                entry[IN_COMPLETE] = True
     return handler
 
 def add_input(name, pinNumber):
@@ -817,7 +838,7 @@ def process_input(entry):
     elif time.ticks_diff(now, entry[IN_RISE]) > STUCK_INPUT_MS:
         # Still high long after any real ring would have ended.
         entry[IN_PENDING] = False
-        append_to_log(entry[IN_NAME] + ' input stuck high')
+        report(entry[IN_NAME] + ' input stuck high')
         return
     else:
         # Mid-pulse. Leave it latched and look again next pass.
@@ -827,8 +848,7 @@ def process_input(entry):
 
     if width < MIN_PULSE_MS:
         entry[IN_REJECTED] += 1
-        append_to_log(entry[IN_NAME] + ' transient ignored, ' +
-                      str(width) + 'ms')
+        report(entry[IN_NAME] + ' transient ignored, ' + str(width) + 'ms')
         return
 
     if was_unpollable(entry):
@@ -841,8 +861,7 @@ def process_input(entry):
 
     entry[IN_RINGS] += 1
     entry[IN_LAST_ALERT] = now
-    print('Doorbell pressed!')
-    append_to_log(entry[IN_NAME] + ' ring, ' + str(width) + 'ms')
+    report(entry[IN_NAME] + ' ring, ' + str(width) + 'ms')
     send_message(chatId, text)
 
 def poll_inputs():
@@ -926,12 +945,10 @@ def mark_boot_stable():
         scratch_write(SCRATCH_UNSTABLE_IDX, 0)
     except Exception:
         pass
-    message = ('Boot ' + str(bootNumber) + ' stable after ' +
-               str(BOOT_STABLE_MS // 1000) + 's')
-    # Printed as well as logged: this is the only flash write in normal
-    # operation, and a silent one is hard to confirm while validating.
-    print(message)
-    append_to_log(message)
+    # The only flash write in normal operation; a silent one is hard to
+    # confirm while validating.
+    report('Boot ' + str(bootNumber) + ' stable after ' +
+           str(BOOT_STABLE_MS // 1000) + 's')
 
 def boot():
     """Bring the device up, hardware first.

@@ -34,7 +34,7 @@ sufficient is free memory staying flat over days rather than any single reading.
 | Power | Direct USB, no battery | Battery module on VSYS, jumper-switchable to direct USB |
 | Reset | Push button on the carrier board **and** an external button on wires via connector | Push button soldered to the board only |
 | Doorbell input | GP16 | **GP18** |
-| Chat target | Telegram group | Separate bot and group |
+| Chat target | Telegram channel | Separate bot and channel |
 
 ### The bench unit cannot model the reboot fault
 
@@ -523,6 +523,20 @@ the loop was blocked in a handshake for four seconds, the 2 s pulse is long over
 and the pin is back at ground. A real ring would be discarded as noise. Capturing
 the falling edge means the width is known however late the loop gets there.
 
+### Debounce applies to opening edges only
+
+Every edge updates the debounce reference, but only a *rising* edge is gated by
+it. The closing edge is always accepted.
+
+Found on hardware: with one window covering both edges, a tap shorter than
+`DEBOUNCE_MS` had its falling edge swallowed. The input stayed latched with no
+width, reported nothing at all, and sat there until the 15 s stuck timeout — a
+very short tap produced silence rather than the rejection it should have.
+
+Closing late is worse than closing on a bounce. A bounce shortens the measured
+width slightly; failing to close loses the event entirely. Updating the reference
+on the falling edge is what stops a bounce back up from reopening the pulse.
+
 ### Interrupt discipline
 
 The handler stamps two integers and returns. No allocation, no I/O, no logging —
@@ -545,6 +559,13 @@ blocked the loop.
 `MIN_PULSE_MS` earns its place beyond noise rejection: the reboot investigation
 has not ruled out EMI coupling into this installation, and a bare edge trigger
 would turn an injected transient into a phantom notification.
+
+### Saying things out loud
+
+`report()` prints and logs. Several events that only matter while someone is
+watching — ring widths, rejected transients, the stability write — were written
+to the in-memory log alone and were invisible on the console. `append_to_log()`
+remains for things nobody needs to watch happen.
 
 ### Counting what polling would have lost
 

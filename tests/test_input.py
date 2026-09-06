@@ -138,6 +138,37 @@ check('bouncing edges do not restart the pulse',
       entry[ns['IN_RISE']], 100000)
 check('debounced edges leave it pending', entry[ns['IN_PENDING']], True)
 
+# --- 4b. A pulse shorter than the debounce window must still close --------
+# Regression: one debounce window covered both edges, so a tap under
+# DEBOUNCE_MS had its falling edge swallowed. The input stayed latched with
+# no width, reported nothing, and sat there until the 15 s stuck timeout.
+# Found on hardware -- a very short tap produced silence rather than a
+# rejection.
+ns, entry = fresh()
+pulse(entry, ns, 100000, 20)             # 20 ms, well inside the 50 ms window
+check('a sub-debounce pulse still closes', entry[ns['IN_COMPLETE']], True)
+check('its width is recorded',
+      ns['time'].ticks_diff(entry[ns['IN_FALL']], entry[ns['IN_RISE']]), 20)
+pass_loop(ns, 101000)
+check('and it is reported as a transient', entry[ns['IN_REJECTED']], 1)
+check('not left latched', entry[ns['IN_PENDING']], False)
+check('no alert sent', len(sent), 0)
+
+# Bouncing on the closing edge takes the first fall and ignores the rest.
+ns, entry = fresh()
+pin = entry[ns['IN_PIN']]
+clock[0] = 100000
+pin.edge(1)
+clock[0] = 102000
+pin.edge(0)
+clock[0] = 102005                        # bounce
+pin.edge(1)
+clock[0] = 102010
+pin.edge(0)
+check('first falling edge closes the pulse', entry[ns['IN_FALL']], 102000)
+pass_loop(ns, 103000)
+check('bouncing close still delivers one ring', len(sent), 1)
+
 # --- 5. The whole point: a ring during a blocking call --------------------
 # The loop is stuck in a TLS handshake for 4 s. Both edges are still caught
 # in hardware, so the ring survives -- and is counted as one the old polling
