@@ -154,20 +154,58 @@ check('and it is reported as a transient', entry[ns['IN_REJECTED']], 1)
 check('not left latched', entry[ns['IN_PENDING']], False)
 check('no alert sent', len(sent), 0)
 
-# Bouncing on the closing edge takes the first fall and ignores the rest.
+# Bounce on the release: the pulse closes on the last fall, not the first.
 ns, entry = fresh()
 pin = entry[ns['IN_PIN']]
 clock[0] = 100000
 pin.edge(1)
 clock[0] = 102000
 pin.edge(0)
-clock[0] = 102005                        # bounce
+clock[0] = 102005                        # bounce back up
 pin.edge(1)
 clock[0] = 102010
 pin.edge(0)
-check('first falling edge closes the pulse', entry[ns['IN_FALL']], 102000)
+check('release bounce does not split the pulse', entry[ns['IN_FALL']], 102010)
 pass_loop(ns, 103000)
-check('bouncing close still delivers one ring', len(sent), 1)
+check('bouncing release still delivers one ring', len(sent), 1)
+
+# --- 4c. Contact chatter on the *make* must not truncate the press --------
+# Found on hardware: a long press reported 'transient ignored, 2ms'. Closing
+# on the first falling edge treated make-chatter as the release, judged the
+# pulse on those 2 ms, and threw away the real four-second press that
+# followed.
+ns, entry = fresh()
+pin = entry[ns['IN_PIN']]
+clock[0] = 100000
+pin.edge(1)                              # contact makes
+clock[0] = 100002
+pin.edge(0)                              # chatter
+clock[0] = 100004
+pin.edge(1)
+clock[0] = 100006
+pin.edge(0)                              # more chatter
+clock[0] = 100008
+pin.edge(1)                              # settles high
+check('chatter does not close the pulse', entry[ns['IN_COMPLETE']], False)
+check('original rise time kept', entry[ns['IN_RISE']], 100000)
+pass_loop(ns, 101000)
+check('mid-pulse, nothing judged yet', len(sent), 0)
+clock[0] = 104000
+pin.edge(0)                              # actual release, 4 s later
+pass_loop(ns, 104200)
+check('the real press is delivered', len(sent), 1)
+check('and measured at its true width',
+      entry[ns['IN_RINGS']], 1)
+check('not counted as a transient', entry[ns['IN_REJECTED']], 0)
+
+# A genuine short tap is still rejected, once the close has settled.
+ns, entry = fresh()
+pulse(entry, ns, 100000, 20)
+pass_loop(ns, 100030)                    # inside the debounce window
+check('a close is not judged before it settles', entry[ns['IN_PENDING']], True)
+pass_loop(ns, 101000)                    # well after
+check('then it is rejected', entry[ns['IN_REJECTED']], 1)
+check('no alert', len(sent), 0)
 
 # --- 5. The whole point: a ring during a blocking call --------------------
 # The loop is stuck in a TLS handshake for 4 s. Both edges are still caught

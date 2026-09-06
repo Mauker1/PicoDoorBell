@@ -147,7 +147,7 @@ loopDelay = 1
 DEBOUNCE_MS = 50
 # A real ring holds terminal 04 high for about 2 s (measured). Anything
 # shorter than this is a transient, not a visitor.
-MIN_PULSE_MS = 150
+MIN_PULSE_MS = 400
 # One alert per ring. Must exceed the pulse width so a single ring cannot
 # produce two notifications.
 ALERT_LOCKOUT_MS = 5000
@@ -781,24 +781,28 @@ def make_edge_handler(entry):
     def handler(pin):
         now = time.ticks_ms()
         if pin.value() == pressed:
-            # Opening edge. Debounced, so contact noise cannot restart a
-            # pulse already in progress.
-            if time.ticks_diff(now, entry[IN_LAST_EDGE]) < DEBOUNCE_MS:
+            if (entry[IN_COMPLETE] and
+                    time.ticks_diff(now, entry[IN_FALL]) < DEBOUNCE_MS):
+                # The line came back up almost immediately, so the fall was
+                # contact chatter on the way in, not the release. Reopen the
+                # pulse and keep the original rise time.
+                entry[IN_COMPLETE] = False
+                entry[IN_LAST_EDGE] = now
+                return
+            if entry[IN_PENDING] and not entry[IN_COMPLETE]:
+                # Already mid-pulse; nothing to do but note the edge.
+                entry[IN_LAST_EDGE] = now
                 return
             entry[IN_LAST_EDGE] = now
             entry[IN_RISE] = now
             entry[IN_COMPLETE] = False
             entry[IN_PENDING] = True
         else:
-            # Closing edge. Every edge updates the debounce reference, so
-            # a bounce back up immediately afterwards is rejected by the
-            # branch above rather than reopening the pulse.
             entry[IN_LAST_EDGE] = now
             if entry[IN_PENDING] and not entry[IN_COMPLETE]:
-                # Deliberately *not* gated by the debounce window: a pulse
-                # shorter than DEBOUNCE_MS would otherwise never close, and
-                # would sit latched until the stuck-input timeout instead of
-                # being reported as the transient it is.
+                # Provisional. process_input() waits a debounce window
+                # before trusting it, and a rise inside that window undoes
+                # it.
                 entry[IN_FALL] = now
                 entry[IN_COMPLETE] = True
     return handler
@@ -834,6 +838,10 @@ def process_input(entry):
     now = time.ticks_ms()
     width = None
     if entry[IN_COMPLETE]:
+        if time.ticks_diff(now, entry[IN_FALL]) < DEBOUNCE_MS:
+            # The close is still provisional: the line may yet bounce back
+            # up and prove this was chatter rather than the release.
+            return
         width = time.ticks_diff(entry[IN_FALL], entry[IN_RISE])
     elif time.ticks_diff(now, entry[IN_RISE]) > STUCK_INPUT_MS:
         # Still high long after any real ring would have ended.

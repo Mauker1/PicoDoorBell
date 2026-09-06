@@ -523,19 +523,33 @@ the loop was blocked in a handshake for four seconds, the 2 s pulse is long over
 and the pin is back at ground. A real ring would be discarded as noise. Capturing
 the falling edge means the width is known however late the loop gets there.
 
-### Debounce applies to opening edges only
+### Closing a pulse is provisional
 
-Every edge updates the debounce reference, but only a *rising* edge is gated by
-it. The closing edge is always accepted.
+A falling edge records the close, but does not settle it. If the line comes back
+up within `DEBOUNCE_MS`, the close is cancelled and the **original rise time is
+kept**. `process_input()` likewise refuses to judge a pulse until the line has
+stayed low for a debounce window.
 
-Found on hardware: with one window covering both edges, a tap shorter than
-`DEBOUNCE_MS` had its falling edge swallowed. The input stayed latched with no
-width, reported nothing at all, and sat there until the 15 s stuck timeout — a
-very short tap produced silence rather than the rejection it should have.
+This is the part that took two attempts and two hardware runs to get right.
 
-Closing late is worse than closing on a bounce. A bounce shortens the measured
-width slightly; failing to close loses the event entirely. Updating the reference
-on the falling edge is what stops a bounce back up from reopening the pulse.
+**First attempt:** one debounce window covering both edges. A tap shorter than
+`DEBOUNCE_MS` had its falling edge swallowed, so the input stayed latched with no
+width and sat there until the 15 s stuck timeout. On the bench, a very short tap
+produced complete silence.
+
+**Second attempt:** accept every falling edge immediately. That broke the case
+that matters far more. Closing a contact chatters — high, low, high, low over a
+few milliseconds before settling — so the *first* fall is part of the make, not
+the release. The pulse closed 2 ms in, was judged a transient on those 2 ms, and
+the genuine four-second press that followed was discarded. Observed on the bench
+as `transient ignored, 2ms` for a long, deliberate press.
+
+The mistaken assumption was that a falling edge means the release. With a
+bouncing contact it usually does not.
+
+Provisional closing handles both: chatter on the way in reopens the pulse and
+preserves its true start, while a real short tap simply settles and is reported
+as the transient it is.
 
 ### Interrupt discipline
 
@@ -559,6 +573,18 @@ blocked the loop.
 `MIN_PULSE_MS` earns its place beyond noise rejection: the reboot investigation
 has not ruled out EMI coupling into this installation, and a bare edge trigger
 would turn an injected transient into a phantom notification.
+
+> **Do not tune this on bench data.** Widths measured by hand on a bench supply
+> (114–357 ms for taps, 1001–8176 ms for presses) describe a wire being touched,
+> not terminal 04. The open question is whether the TwinBus latches its own ~2 s
+> signal regardless of how briefly the visitor presses, or tracks the button. If
+> it tracks the button, a quick jab could produce a 300 ms pulse and a threshold
+> raised to 400 ms would silently reject a real ring — the exact failure this
+> project exists to prevent, reintroduced by tuning against the wrong signal.
+>
+> Settle it by jabbing the real doorbell as briefly as possible and reading the
+> logged width. Until then 150 ms stands: above any plausible transient, below
+> any plausible ring, and erring toward delivering.
 
 ### Saying things out loud
 
