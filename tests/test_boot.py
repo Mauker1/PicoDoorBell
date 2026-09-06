@@ -139,14 +139,24 @@ class Response:
 
 class Requests:
     raise_oserror = False
+    accepts_timeout = True
+    last_timeout = None
 
-    def post(self, url, json=None):
+    def _check(self, kwargs):
+        if 'timeout' in kwargs:
+            if not Requests.accepts_timeout:
+                raise TypeError("unexpected keyword argument 'timeout'")
+            Requests.last_timeout = kwargs['timeout']
+
+    def post(self, url, json=None, **kwargs):
+        self._check(kwargs)
         events.append('http_post')
         if Requests.raise_oserror:
             raise OSError(-2, 'DNS lookup failed')
         return Response()
 
-    def get(self, url):
+    def get(self, url, **kwargs):
+        self._check(kwargs)
         events.append('http_get')
         if Requests.raise_oserror:
             raise OSError(-2, 'DNS lookup failed')

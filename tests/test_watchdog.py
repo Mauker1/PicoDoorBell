@@ -115,6 +115,41 @@ for node in ast.walk(tree):
             long_sleeps.append((node.lineno, 'non-constant'))
 check('no raw sleep can outlast the watchdog', long_sleeps, [])
 
+# --- 4b. A dropped network must not become a reset -------------------------
+# Observed on hardware, twice: WiFi vanished while a request was in flight,
+# urequests blocked with no timeout, and the watchdog reset the board. Once
+# during a send (losing the ring) and once during getUpdates.
+ns = fresh()
+WLAN = _stubs['WLAN']
+
+WLAN.connected = False
+try:
+    del events[:]
+    outcome, status, body = ns['do_request']('GET', 'https://example.invalid/x')
+    check('no socket is opened while WiFi is down', 'http_get' in events, False)
+    check('it reports a retryable outcome', outcome, ns['REQUEST_RETRY'])
+finally:
+    WLAN.connected = True
+
+# A timeout below the watchdog turns a stalled socket into an outcome.
+Requests.last_timeout = None
+ns['do_request']('GET', 'https://example.invalid/x')
+check('requests carry a timeout', Requests.last_timeout, ns['REQUEST_TIMEOUT_S'])
+check('the timeout fires before the watchdog',
+      ns['REQUEST_TIMEOUT_S'] * 1000 < ns['WDT_TIMEOUT_MS'], True)
+
+# An older urequests without the parameter must still work.
+Requests.accepts_timeout = False
+try:
+    ns = fresh()
+    del events[:]
+    outcome, status, body = ns['do_request']('GET', 'https://example.invalid/x')
+    check('falls back when timeout is unsupported', outcome, ns['REQUEST_OK'])
+    check('the request still happened', 'http_get' in events, True)
+    check('and it stops trying', ns['requestsTimeoutSupported'], False)
+finally:
+    Requests.accepts_timeout = True
+
 # --- 5. The flash write is covered -----------------------------------------
 # A sector erase stalls the CPU with interrupts disabled.
 ns = fresh()

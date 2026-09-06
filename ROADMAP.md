@@ -310,7 +310,38 @@ flaky moment into notification noise.
 Classify: network errors → retry; parse errors → log and continue; `MemoryError` →
 `gc.collect()`, then reset if it recurs.
 
+### ✅ A9 — Request timeouts and a pre-flight connectivity check — **P0**
+Observed twice on the bench: WiFi dropped while a request was in flight, `urequests` blocked
+with no timeout, and the watchdog reset the board — once during a send, losing the ring, and
+once during `getUpdates`.
+
+The earlier three-minute outage test passed only because the outage began while the loop was
+idle, so `connect_wifi()` noticed and retried, feeding as it went. An outage that starts
+*during* a request takes the other path.
+
+Two guards: skip the request entirely when WiFi is already down, and pass a 5 s timeout when
+`urequests` supports it, falling back to an untimed call otherwise. Neither is complete — a
+network that vanishes mid-handshake can still exceed the timeout — so the watchdog stays the
+final backstop. But a reset should be the last resort, not the routine answer to a flaky
+router.
+
+**This gated promotion.** Without it, a flaky network would have produced repeated watchdog
+reboots on the unit being used to measure reboots.
+
+✅ **Verified on hardware.** A network outage now produces sixteen retry cycles and a clean
+reconnection with no reset, where the same test previously reset the board. The reconnect
+message also carries no reset summary, confirming that fix.
+
+Inconclusive: no "urequests has no timeout support" line appeared. Either the build accepts
+the parameter, or the pre-flight check caught every case before the timeout path was reached.
+The guard that fired is the one that mattered.
+
 ### B6 — Offline event queue — **P0**
+> **Demonstrated cleanly.** With A9 in place, dropping WiFi just after a press produces:
+> `Doorbell ring, 202ms` followed by `WiFi is disconnected.` — the ring detected, measured,
+> counted and logged, then lost. No crash, no error, no trace beyond that line. This is now
+> the last real gap in Phase 1.
+>
 > **Observed on the bench, not hypothetical.** A press produced no notification: the send
 > hung, the watchdog bit at 8 s, the board reset, and the ring was gone. `process_input()`
 > marks a ring delivered — increments the counter, sets the lockout — *before* calling

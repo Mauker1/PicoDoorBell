@@ -194,6 +194,13 @@ sendURL = 'https://api.telegram.org/bot' + botToken + '/sendMessage'
 getURL = 'https://api.telegram.org/bot' + botToken + '/getUpdates'
     
 # Request outcomes
+# Below the watchdog timeout, so a stalled socket fails as an outcome rather
+# than as a reset. Only effective if urequests accepts the parameter.
+REQUEST_TIMEOUT_S = 5
+
+# Flipped off the first time urequests rejects the timeout argument.
+requestsTimeoutSupported = True
+
 REQUEST_OK = 0          # 2xx, body decoded
 REQUEST_RETRY = 1       # transient (network fault or 5xx), safe to retry
 REQUEST_RATE_LIMIT = 2  # 429, honour retry_after before retrying
@@ -238,14 +245,34 @@ def do_request(method, url, payload=None):
     response or None. Never raises for network or HTTP-level failures --
     callers branch on outcome instead.
     """
+    global requestsTimeoutSupported
+    # Do not open a socket the network cannot carry. Losing WiFi mid-request
+    # is what hangs urequests, and the check is free.
+    if not is_wifi_connected():
+        return (REQUEST_RETRY, 0, None)
+
     response = None
     # A handshake can run into seconds; the watchdog must not bite mid-request.
     feed_watchdog()
     try:
-        if method == 'POST':
-            response = requests.post(url, json=payload)
-        else:
-            response = requests.get(url)
+        if requestsTimeoutSupported:
+            try:
+                if method == 'POST':
+                    response = requests.post(url, json=payload,
+                                             timeout=REQUEST_TIMEOUT_S)
+                else:
+                    response = requests.get(url, timeout=REQUEST_TIMEOUT_S)
+            except TypeError:
+                # This urequests build has no timeout parameter. Note it once
+                # and fall through to the untimed call below.
+                requestsTimeoutSupported = False
+                append_to_log('urequests has no timeout support; '
+                              'the watchdog is the only backstop')
+        if response is None and not requestsTimeoutSupported:
+            if method == 'POST':
+                response = requests.post(url, json=payload)
+            else:
+                response = requests.get(url)
         status = response.status_code
         # Decode while the socket is still open. Telegram answers JSON
         # for errors too, so this is also how we read error details.

@@ -691,6 +691,26 @@ outcome, status, body = do_request(method, url, payload=None)
 | `REQUEST_RATE_LIMIT` | 429 | wait `retry_after(body)` seconds, then retry |
 | `REQUEST_FATAL` | Other 4xx | log and give up; retrying will not help |
 
+### A dropped network must not become a reset
+
+Two guards, because the failure was observed twice on hardware: WiFi vanished
+while a request was in flight, `urequests` blocked with no timeout, and the
+watchdog reset the board — once during a send, losing the ring, and once during
+`getUpdates`.
+
+1. **Pre-flight check.** `do_request` returns `REQUEST_RETRY` without opening a
+   socket if `is_wifi_connected()` is false. Free, and it covers the common case
+   where the network went away before the call.
+2. **Request timeout**, at 5 s, below the 8 s watchdog. A stalled socket becomes
+   an outcome the caller can retry rather than a reset. Passed only if
+   `urequests` accepts the parameter; older builds fall back to an untimed call,
+   noted once in the log.
+
+Neither is complete. A network that disappears mid-handshake, or a `getaddrinfo`
+that blocks, can still exceed the timeout, and **the watchdog remains the final
+backstop**. That is the correct order of defences — but a reset should be the
+last resort, not the routine response to a flaky router.
+
 ### Why this shape
 
 `urequests` **does not raise on 4xx** — it returns a response object carrying
