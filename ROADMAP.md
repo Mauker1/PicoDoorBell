@@ -551,7 +551,52 @@ active-high/active-low polarity, feature toggles.
 The README's "Final details" section is currently a list of *"now go edit source code"*
 instructions. It should become *"edit `config.py`."*
 
-### E2 — Module split — **P2**
+### E2 — Module split — **P1, raised**
+`main.py` is **1720 lines**, up from 209 at the start of this work. It was P2 when the file
+was small enough that the cost of leaving it alone was theoretical. It no longer is.
+
+**Proposed layering.** Acyclic, each module depending only on those above it:
+
+| Module | Holds | Depends on |
+| --- | --- | --- |
+| `board.py` | Pin assignments per revision *(done)* | — |
+| `secrets.py` | Credentials, chat id | — |
+| `config.py` | Timings, thresholds, message strings (E1) | — |
+| `applog.py` | `logLines`, `append_to_log`, `report`, `print_log` | config |
+| `persist.py` | `state.json`, the tier rules, atomic write | applog |
+| `resets.py` | Scratch registers, `read_reset_info`, verdicts | applog, persist |
+| `net.py` | WiFi connect/bounce, `do_request`, backoff, watchdog feed | config, applog |
+| `telegram.py` | `send_message`, `read_message`, commands, ring queue | net, applog, persist |
+| `doorbell.py` | Input records, IRQ handlers, pulse judging | config, applog |
+| `main.py` | `boot()`, the loop, wiring | everything |
+
+`doorbell.py` deliberately does **not** send. It latches and judges; delivery is
+`telegram.py`'s job. That is what keeps the graph acyclic, and it already reflects how B1
+and B6 are written.
+
+**Functions, not classes — decided.** MicroPython charges for every class and instance, and
+there is exactly one of each thing here: one input list, one queue, one log. Classes would
+buy testability this codebase already has by other means, at a cost in RAM on a part with
+176 KB free. Modules give the namespace separation without the overhead.
+
+Not to be revisited during the split. If a second instance of something ever genuinely
+appears — a second board driven from one Pico, say — that is the moment to reconsider, and
+not before.
+
+**Measure the cost.** More modules means more module objects, more globals dictionaries,
+and more import-time parsing. C3's heartbeat now reports free memory, so take a reading
+before and after rather than guessing. If the cost is material, `.mpy` precompilation with
+`mpy-cross` removes the parse step and most of the source overhead.
+
+**Sequence.** All eight test files currently reach into `main.py` by AST extraction and will
+break. That is F1's remaining work: rewrite them as plain imports, one module at a time,
+moving code only once the tests for it import cleanly. Tests first, then the move — which is
+the opposite of how it is tempting to do it.
+
+**Watch for implicit globals.** The main loop runs at module scope today, so assignments
+like `lastPassTicks = ...` mutate globals without declaration. Every one becomes a bug the
+moment it moves inside a function. There are several.
+
 Roughly: `config.py`, `wifi.py`, `telegram.py`, `applog.py`, `doorbell.py`, and a thin
 `main.py`.
 
