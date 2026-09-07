@@ -14,7 +14,7 @@ From the bench unit at v1.23.0, after boot with WiFi connected:
 
 | Measurement | Value |
 | --- | --- |
-| `gc.mem_free()` | 178,480 bytes |
+| `gc.mem_free()` | **159,968 bytes** on the current build |
 | Filesystem | 4096-byte blocks, 212 total, 202 free (~830 KB free) |
 | Ring signal (terminal 04) | Idle at ground, 5 V DC for ~2 s, clean square wave |
 | Telegram round trip | 1–2 s, detection to delivery |
@@ -22,6 +22,11 @@ From the bench unit at v1.23.0, after boot with WiFi connected:
 The memory figure is the reference for the leak watch: `do_request` closes every
 socket in a `finally` and collects afterwards, and the proof that this is
 sufficient is free memory staying flat over days rather than any single reading.
+
+> **Compare like with like.** An earlier build read 178,480. The drop is not a
+> leak: `main.py` grew from roughly 1,000 lines to 1,720, and MicroPython holds
+> compiled bytecode in RAM. A baseline is only meaningful against the same build,
+> which is also the first real datum for costing the E2 module split.
 
 ---
 

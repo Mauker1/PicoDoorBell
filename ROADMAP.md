@@ -920,12 +920,17 @@ Costs one extra erase per write — irrelevant at these frequencies, and it buys
 **Do not rewrite `secrets.py`.** Runtime state belongs in a separate file; rewriting a source
 file the user also edits by hand invites a merge conflict on a microcontroller.
 
-### I3 — Wear instrumentation — **P2**
+### ✅ I3 — Wear instrumentation — **P2**
 Keep a monotonic write counter inside the state file and report it in the heartbeat (C3).
 
 This makes wear **observable** rather than theoretical. If the counter climbs faster than
 expected, there is a bug in the write discipline — and it surfaces in month one instead of
 year three.
+
+✅ **Delivered with C3.** The bench unit reads **38 writes** across its whole life: roughly
+one per stable boot over 30 boots, plus a few queue snapshots from outage testing. Against
+~100,000 cycles that is nothing, and the bench unit has taken far more abuse than production
+ever will.
 
 ### ✅ I4 — Filesystem verification — **P3**
 Confirm whether the build uses littlefs2 or FAT, and record it in the troubleshooting
