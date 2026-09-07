@@ -165,6 +165,35 @@ ns['maybe_snapshot_queue']()
 check('the flash copy is cleared after delivery',
       json.load(open('state.json'))['queue'], [])
 
+# --- 6b. A ring arriving during trouble is persisted at once ---------------
+# A watchdog bite during a slow DNS lookup would otherwise take it: the
+# five-minute snapshot has not fired yet and RAM does not survive.
+ns = fresh()
+ns['networkFailures'] = 3          # the network is already misbehaving
+ns['enqueue_ring'](2000)
+stored = json.load(open('state.json'))['queue']
+check('a ring queued during trouble is written immediately', len(stored), 1)
+
+# When the network is healthy there is no such urgency, and no write.
+ns = fresh()
+ns['networkFailures'] = 0
+ns['enqueue_ring'](2000)
+exists = os.path.exists('state.json')
+stored = json.load(open('state.json'))['queue'] if exists else []
+check('a ring queued on a healthy network writes nothing', stored, [])
+
+# --- 6c. An announcement is not lost to a failed send ----------------------
+ns = fresh()
+ns['pendingAnnouncement'] = 'boot report'
+ns['send_message'] = recorder(ns, outcome=ns['REQUEST_RETRY'])
+ns['flush_announcement']()
+check('a failed announcement is retained',
+      ns['pendingAnnouncement'], 'boot report')
+ns['send_message'] = recorder(ns)
+ns['flush_announcement']()
+check('and delivered on the next attempt', sent[-1], 'boot report')
+check('then cleared', ns['pendingAnnouncement'], None)
+
 # --- 7. The ring survives a reset ------------------------------------------
 ns = fresh()
 WLAN.connected = False

@@ -424,6 +424,41 @@ Every path verified on the bench unit:
 > reboot investigation that is entirely about power and RUN events. The running
 > total therefore lives in flash; see *Counting boots* below.
 
+### Telling a watchdog bite from a soft reboot
+
+`WATCHDOG_REASON` bit 0 is TIMER, an actual timeout; bit 1 is FORCE, which
+`machine.reset()` uses. Observed on the bench: `wdt=0x1` when the watchdog fired
+during a slow request, `wdt=0x2` for a deliberate reset.
+
+Only trusted on a **warm** boot. The bootrom sets TIMER during an ordinary cold
+start, which is what made `reset_cause()` unreliable in the first place.
+
+### Nothing is dropped because a send failed
+
+Three things now survive a failed transmission, on the same rule: **discard only
+on confirmation.**
+
+| What | Held in | Retried by |
+| --- | --- | --- |
+| Rings | `queue` | `flush_queue()` |
+| Startup and reconnect notices | `pendingAnnouncement` | `flush_announcement()` |
+| The log | `logLines` | `print_log()` |
+
+The announcement matters more than it looks: it carries the reset diagnosis, so
+losing it to a momentary outage would quietly cost the reboot investigation its
+data. It was previously sent once and forgotten — a regression that surfaced when
+the backlog fetch below started arming the backoff before it.
+
+### The update backlog is discarded at boot
+
+`updateId` lives in RAM, so every reset restarts it at zero and `getUpdates`
+replays whatever Telegram has been holding — re-executing commands sent up to 24
+hours earlier. Observed: a `/log` answered again after every reboot.
+
+`discard_update_backlog()` fetches with `offset=-1` and acknowledges the last
+update, clearing everything before it. It runs before the startup announcement,
+so a reset cannot replay yesterday's commands.
+
 ### Counting boots
 
 Two counters, in different tiers, answering different questions.
@@ -460,7 +495,8 @@ left `boots` at 2, and both attempts reported `boot #3`, the second with
 | --- | --- | --- |
 | `power` | cold + `POR/BOD` | Supply dropped, or first power-up |
 | `run-pin` | cold + `RUN` | RUN pin pulled low |
-| `warm-reset` | warm | Soft reboot or watchdog |
+| `watchdog` | warm + `WATCHDOG_REASON` bit 0 | A real timeout |
+| `warm-reset` | warm, no TIMER bit | Soft reboot |
 
 > **Reading `warm-reset` on production.** Nothing there interacts with the REPL,
 > so spontaneous soft reboots do not occur — once B2 lands, a `warm-reset` on the

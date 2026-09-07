@@ -153,6 +153,21 @@ ns = load_firmware()
 check('no evidence reads as unknown',
       ns['reset_verdict'](ns['resetInfo']), 'unknown')
 
+# A genuine watchdog bite is distinguishable from a soft reboot. Observed on
+# the bench: wdt=0x1 (TIMER) for a real timeout during a slow request,
+# wdt=0x2 (FORCE) for machine.reset().
+mem32.cells.clear()
+mem32[MAGIC_ADDR] = 0x50444231
+mem32[WDT_REASON] = 0x1
+mem32[CHIP_RESET] = 0
+ns = load_firmware()
+check('a TIMER bite reads as a watchdog reset',
+      ns['reset_verdict'](ns['resetInfo']), 'watchdog')
+
+mem32[WDT_REASON] = 0x2
+ns = load_firmware()
+check('a FORCE reset does not', ns['reset_verdict'](ns['resetInfo']), 'warm-reset')
+
 # --- 5. The discriminator the production unit needs ------------------------
 # Brownout and RUN-pin pickup must not look alike.
 mem32.cells.clear()

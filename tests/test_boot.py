@@ -134,7 +134,11 @@ mem32 = Mem32()
 
 
 class Response:
+    payload_override = None
+
     def __init__(self, status=200, payload=None):
+        if payload is None and Response.payload_override is not None:
+            payload = Response.payload_override
         self.status_code = status
         self._payload = payload if payload is not None else {'ok': True, 'result': []}
 
@@ -256,6 +260,8 @@ check('wlan activated before LED created',
       events.index('wlan_active') < events.index('pin_LED'), True)
 check('startup message was attempted', 'http_post' in events, True)
 check('reset info captured at boot', ns['resetInfo'] is not None, True)
+check('the update backlog is discarded before announcing',
+      events.index('http_get') < events.index('http_post'), True)
 check('boot number derives from flash', ns['bootNumber'], 1)
 check('nothing persisted before the device proves stable',
       os.path.exists('state.json'), False)
@@ -268,9 +274,10 @@ ns = load_firmware()
 
 check('boot survived a failing startup send', ns['doorBellInput'] is not None, True)
 check('LED still configured after send failure', ns['led'] is not None, True)
-check('send was genuinely attempted', 'http_post' in events, True)
-check('pin still precedes the failed call',
-      events.index('pin_16') < events.index('http_post'), True)
+check('the announcement is held, not lost',
+      ns['pendingAnnouncement'] is not None, True)
+check('pin still precedes the first network call',
+      events.index('pin_16') < events.index('http_get'), True)
 
 # --- 3. connect_wifi must not notify --------------------------------------
 del events[:]

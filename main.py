@@ -113,6 +113,11 @@ updateId = 0
 # Flags
 isStartup = True
 
+# An announcement that has not been delivered yet. The startup one carries the
+# reset diagnosis, which is the whole point of C4 on the production unit -- a
+# reboot during a brief network blip must not lose it.
+pendingAnnouncement = None
+
 # Time variables
 startupTime = time.ticks_ms()
 lastLogCheck = startupTime
@@ -550,6 +555,29 @@ def send_message (chatId, message):
         report('sendMessage failed: ' + describe_api_error(status, body))
     return (outcome, status, body)
 
+def discard_update_backlog():
+    """Drop anything Telegram has been holding for us.
+
+    `updateId` lives in RAM, so every reset restarts it at zero and
+    getUpdates replays the backlog -- re-executing commands sent up to 24
+    hours ago. Observed: a `/log` answered again after every reboot.
+
+    An offset of -1 asks for the last update only; acknowledging it clears
+    everything before it.
+    """
+    global updateId
+    outcome, status, body = do_request('GET', getURL + '?offset=-1&limit=1')
+    if outcome != REQUEST_OK:
+        return False
+    try:
+        results = body['result']
+    except (KeyError, TypeError):
+        return False
+    if results:
+        updateId = results[-1]['update_id'] + 1
+        report('Discarded ' + str(len(results)) + ' stale update(s)')
+    return True
+
 def read_message(chatId):
     global updateId
     url = ''
@@ -562,7 +590,11 @@ def read_message(chatId):
     if outcome == REQUEST_SKIPPED:
         return
     if outcome != REQUEST_OK:
-        append_to_log('getUpdates failed: ' + describe_api_error(status, body))
+        # status 0 means do_request already reported the transport error
+        # with its errno; repeating it as 'status=0' adds nothing.
+        if status != 0:
+            append_to_log('getUpdates failed: ' +
+                          describe_api_error(status, body))
         return
     for result in body['result']:
         updateId = result['update_id'] + 1
@@ -964,8 +996,17 @@ def reset_verdict(info):
         # indistinguishable from a watchdog bite.
         return 'self-reset'
     if info['warmBoot']:
-        # Scratch survived, so nothing reset the chip. Soft reboot, or a
-        # watchdog bite once B2 exists. CHIP_RESET here is stale.
+        # Scratch survived, so nothing reset the chip: a soft reboot or a
+        # watchdog bite. CHIP_RESET here is stale.
+        #
+        # WATCHDOG_REASON separates them. Bit 0 is TIMER, an actual timeout;
+        # bit 1 is FORCE, which machine.reset() uses. Observed on the bench:
+        # wdt=0x1 for a genuine bite during a slow request, wdt=0x2 for a
+        # deliberate reset. Only trusted on a warm boot -- the bootrom sets
+        # TIMER during an ordinary cold start.
+        reason = info['wdtReason'] or 0
+        if reason & 0x1:
+            return 'watchdog'
         return 'warm-reset'
     flags = info['flags']
     if 'POR/BOD' in flags:
@@ -1116,20 +1157,39 @@ def announce_startup():
     typically DNS not yet ready straight after association -- killed the
     boot before the doorbell input was ever configured.
     """
-    global isStartup
+    global isStartup, pendingAnnouncement
     if (isStartup):
         # Carry the reset diagnosis into the chat. The reboots being chased
         # happen on the production unit, not the bench, so this message is
         # the only place the evidence reliably surfaces.
-        outcome, status, body = send_message(
-            chatId, startupText + '\n' + format_reset_info(resetInfo))
+        pendingAnnouncement = startupText + '\n' + format_reset_info(resetInfo)
         isStartup = False
     else:
         # Deliberately no reset summary. Nothing reset -- the network came
         # back. Repeating the last boot's diagnosis here made a WiFi blip
         # look like a reboot, which corrupts the very dataset C4 collects.
-        outcome, status, body = send_message(chatId, reconnectText)
-    return outcome == REQUEST_OK
+        pendingAnnouncement = reconnectText
+    return flush_announcement()
+
+def flush_announcement():
+    """Deliver the pending announcement, retrying until it lands.
+
+    Sent directly rather than through the ring queue, but with the same
+    rule: it is not discarded until Telegram confirms it. The startup
+    message carries the reset diagnosis, and losing that to a momentary
+    outage would quietly cost the reboot investigation its data.
+    """
+    global pendingAnnouncement
+    if pendingAnnouncement is None:
+        return True
+    outcome, status, body = send_message(chatId, pendingAnnouncement)
+    if outcome == REQUEST_OK:
+        pendingAnnouncement = None
+        return True
+    if outcome == REQUEST_FATAL:
+        report('Announcement undeliverable; dropping it')
+        pendingAnnouncement = None
+    return False
 
 def make_edge_handler(entry):
     """Build the interrupt handler for one input.
@@ -1259,6 +1319,11 @@ def enqueue_ring(width):
         queueDropped += 1
         append_to_log('Queue full, dropped the oldest ring')
     queue.append([time.ticks_ms(), width, current_epoch(), False])
+    if networkFailures:
+        # The network is already failing, so this ring may sit here a while
+        # -- and a watchdog bite during a slow DNS lookup would take it with
+        # it. One write, only for rings that arrive during trouble.
+        snapshot_queue()
 
 def describe_delay(entry):
     if entry[Q_RESTORED]:
@@ -1468,6 +1533,9 @@ def boot():
 
     try:
         connect_wifi()
+        # Before announcing: otherwise a reset replays every command
+        # Telegram has been holding, including ones from yesterday.
+        discard_update_backlog()
         announce_startup()
     except Exception as e:
         # Network trouble is the main loop's problem, not a boot failure.
@@ -1486,6 +1554,7 @@ while True:
             bounce_wifi()
 
         poll_inputs()
+        flush_announcement()
         flush_queue()
         maybe_snapshot_queue()
         
