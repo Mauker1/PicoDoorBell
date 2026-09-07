@@ -673,6 +673,45 @@ the doorbell is wired today.
 
 ---
 
+## Heartbeat
+
+The device reports in every six hours, and on demand via `/status`.
+
+### Why
+
+Its only sign of life used to be `Checking for new messages...` printed once a
+minute — a line that says nothing, that nobody watches, and that made silence and
+death indistinguishable. It is now log-only, so a long run's console shows events
+rather than a metronome.
+
+Free memory is the figure that matters most, because the socket-leak fix in
+`do_request` can be proven no other way: a single reading says nothing, only a
+flat trend over days does. Reading it by hand meant killing the run to reach a
+REPL, which the watchdog then reset out from under you. The heartbeat removes
+that trade entirely — a soak now measures itself.
+
+### Contents
+
+Uptime, boot number and reset verdict, free memory, RSSI and IP, per-input
+counters (rings, transients, unpollable), queue depth and drops, and the flash
+write count. Consecutive network failures and an undelivered announcement are
+included only when non-zero, so an ordinary report stays short.
+
+### Uptime is accumulated, not derived
+
+`ticks_ms` wraps at about 12.4 days and is ambiguous past half of that, so uptime
+is summed from per-pass differences instead. That is wrap-safe for as long as the
+device runs.
+
+### Delivery
+
+Routed through `pendingAnnouncement`, so a failed heartbeat is retried rather
+than dropped — a missing "still alive" message is exactly what a dead device
+looks like. If that slot already holds a startup report, the heartbeat yields:
+the boot diagnosis matters more, and the next one is only hours away.
+
+---
+
 ## Undelivered rings
 
 A ring detected during a network outage used to be logged and then lost. Observed
@@ -727,6 +766,22 @@ timestamp with no schema change.
 
 One `connect()` is issued, then given 30 seconds to work before another is tried.
 After 20 attempts — roughly ten minutes — the board resets itself.
+
+### WiFi power save is off
+
+The CYW43439 defaults to sleeping between beacons, which adds latency and drops
+packets — the standard explanation for the timeouts an always-on device sees.
+`wlan.config(pm=...)` disables it, applied before connecting since the setting
+affects the association.
+
+Both units are mains-powered, so there is no reason to keep it. `board.py` may
+set `wifiPowerSave = True` to opt back in; it is read with a default rather than
+required, so existing installs keep working. The future battery build is the one
+case that wants it on, where the tradeoff inverts and a few dropped packets cost
+less than the current draw.
+
+Failure to set the mode is logged, not fatal. An unconfigurable radio still
+answers the door.
 
 ### Never interrupt a join in progress
 
@@ -961,6 +1016,30 @@ outcome, status, body = do_request(method, url, payload=None)
 | `REQUEST_RATE_LIMIT` | 429 | wait `retry_after(body)` seconds, then retry |
 | `REQUEST_FATAL` | Other 4xx | log and give up; retrying will not help |
 | `REQUEST_SKIPPED` | Never attempted — backoff, or the link is down | wait; this is evidence of nothing |
+
+### The timeout cannot fully prevent a watchdog reset
+
+`timeout` applies **per socket operation**, not per request. DNS, connect, the
+TLS handshake and the read each get their own budget, so a request can outlast
+the 8 s watchdog even with a timeout set — observed on the bench as a reset
+landing immediately after `HTTP GET failed: ETIMEDOUT`.
+
+There is no headroom on the other side: the RP2040 caps the watchdog near 8.3 s,
+and feeding from a timer during a request would defeat the point of having one.
+`getaddrinfo` can also block outside the timeout entirely.
+
+The timeout stays at **5 s**. Three was tried after a run of `ETIMEDOUT`
+failures, but those were most likely the inter-VLAN hop and WiFi power save
+rather than anything a timeout could fix — both since removed. Tuning against a
+problem that is being eliminated leaves a margin tighter than the hardware needs
+and turns healthy-but-slow requests into retries.
+
+**This reduces the exposure; it does not remove it.**
+
+The response is to make a reset cheap rather than to prevent it: the boot counter
+is in flash, the reset reason is in a scratch register, and a ring queued while
+the network is degraded is written to flash immediately. What a reset still costs
+is the RAM log.
 
 ### A dropped network must not become a reset
 

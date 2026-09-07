@@ -71,6 +71,19 @@ if _missing:
 
 doorBellPin = board.doorBellPin
 
+# B8: WiFi power save. Off for a mains-powered unit -- the CYW43439 otherwise
+# sleeps between beacons, which adds latency and drops packets, and is the
+# standard explanation for the timeouts an always-on device sees.
+#
+# Optional in board.py rather than required, so existing installs keep working.
+# The future battery build (G5) is the one case that wants it on: there the
+# tradeoff inverts and a few dropped packets are cheaper than the current draw.
+wifiPowerSave = getattr(board, 'wifiPowerSave', False)
+
+# Newer builds name this; older ones only take the magic number.
+WIFI_PM_NONE = getattr(network.WLAN, 'PM_NONE', 0xa11140)
+WIFI_PM_PERFORMANCE = getattr(network.WLAN, 'PM_PERFORMANCE', 0xa11142)
+
 # Set country to avoid possible errors
 rp2.country('DE')
 
@@ -95,6 +108,7 @@ text = 'Doorbell activated!'
 
 # Commands
 logCommand = "/log"
+statusCommand = "/status"
 
 # In memory log
 # Kept as a list of lines, never as one growing string. `log += entry`
@@ -117,6 +131,25 @@ isStartup = True
 # reset diagnosis, which is the whole point of C4 on the production unit -- a
 # reboot during a brief network blip must not lose it.
 pendingAnnouncement = None
+
+####################################################################################
+# C3 heartbeat.
+#
+# The device's only "still alive" signal was a per-minute console print that
+# said nothing and that nobody watches. Silence and death looked identical.
+#
+# A periodic report carries the numbers that only uptime can produce -- free
+# memory above all, since the socket-leak fix can be proven no other way, and
+# reading it by hand means killing the run to reach a REPL.
+####################################################################################
+
+HEARTBEAT_MS = 21600000      # six hours: four a day, not chatty
+
+lastHeartbeat = 0
+# Accumulated rather than derived from ticks_ms, which wraps at ~12.4 days and
+# is ambiguous past half of that. Summing per-pass differences is wrap-safe
+# for as long as the device runs.
+uptimeMs = 0
 
 # Time variables
 startupTime = time.ticks_ms()
@@ -271,8 +304,24 @@ sendURL = 'https://api.telegram.org/bot' + botToken + '/sendMessage'
 getURL = 'https://api.telegram.org/bot' + botToken + '/getUpdates'
     
 # Request outcomes
-# Below the watchdog timeout, so a stalled socket fails as an outcome rather
-# than as a reset. Only effective if urequests accepts the parameter.
+# Applies per socket operation, not per request: DNS, connect, the TLS
+# handshake and the read each get their own budget. A request can therefore
+# outlast the 8 s watchdog even with a timeout set, which is exactly what
+# happened on the bench -- a reset landing immediately after
+# 'HTTP GET failed: ETIMEDOUT'.
+#
+# Five seconds is a deliberate choice, not a default. Three was tried after a
+# run of ETIMEDOUT failures, but those were most likely the inter-VLAN hop and
+# WiFi power save rather than anything the timeout could fix -- both since
+# removed. Tuning against a problem that is being eliminated only leaves a
+# margin tighter than the hardware needs, and turns healthy-but-slow requests
+# into retries.
+#
+# The exposure is reduced, not removed: getaddrinfo can block outside the
+# timeout entirely, and the RP2040 caps the watchdog near 8.3 s, so there is no
+# headroom to buy on the other side. The answer to that is to make a reset
+# cheap, which the flash boot counter, the scratch reset reason and the
+# immediate queue snapshot already do.
 REQUEST_TIMEOUT_S = 5
 
 # Flipped off the first time urequests rejects the timeout argument.
@@ -598,10 +647,11 @@ def read_message(chatId):
         return
     for result in body['result']:
         updateId = result['update_id'] + 1
-        print(result['channel_post']['text'])
-        print(result['channel_post']['text'] == logCommand)
-        if (result['channel_post']['text'] == logCommand):
+        command = result['channel_post']['text']
+        if (command == logCommand):
             print_log(chatId)
+        elif (command == statusCommand):
+            send_message(chatId, heartbeat_text())
 
 def report(message):
     """Log it and say it.
@@ -1403,6 +1453,66 @@ def poll_inputs():
         if entry[IN_PENDING]:
             process_input(entry)
 
+def format_uptime(ms):
+    seconds = ms // 1000
+    days = seconds // 86400
+    hours = (seconds % 86400) // 3600
+    minutes = (seconds % 3600) // 60
+    if days:
+        return str(days) + 'd ' + str(hours) + 'h ' + str(minutes) + 'm'
+    if hours:
+        return str(hours) + 'h ' + str(minutes) + 'm'
+    return str(minutes) + 'm'
+
+def wifi_rssi():
+    try:
+        return str(wlan.status('rssi')) + ' dBm'
+    except Exception:
+        return 'unknown'
+
+def heartbeat_text():
+    """Everything worth knowing about a device nobody is watching.
+
+    Free memory leads because it is the one figure that only uptime can
+    produce: the socket-leak fix in do_request cannot be proven by any
+    single reading, and getting one by hand means killing the run to reach
+    a REPL -- which the watchdog then resets out from under you.
+    """
+    gc.collect()
+    lines = [
+        'Still here.',
+        'Uptime: ' + format_uptime(uptimeMs),
+        'Boot: #' + str(bootNumber if bootNumber is not None else '?') +
+        ' (' + reset_verdict(resetInfo) + ')',
+        'Free memory: ' + str(gc.mem_free()) + ' bytes',
+        'WiFi: ' + wifi_rssi() + ', ' + str(wifiData),
+        input_summary(),
+        'Flash writes: ' + str(state_get('writes', 0)),
+    ]
+    if networkFailures:
+        lines.append('Network: ' + str(networkFailures) +
+                     ' consecutive failure(s)')
+    if pendingAnnouncement is not None:
+        lines.append('An announcement is still undelivered.')
+    return '\n'.join(lines)
+
+def maybe_heartbeat():
+    """Report in, on schedule.
+
+    Routed through pendingAnnouncement so a failed heartbeat is retried
+    rather than lost -- a missing "still alive" message is exactly what a
+    dead device looks like. Skipped if that slot is occupied: a startup
+    report matters more, and the next heartbeat is only hours away.
+    """
+    global lastHeartbeat, pendingAnnouncement
+    if time.ticks_diff(time.ticks_ms(), lastHeartbeat) < HEARTBEAT_MS:
+        return False
+    lastHeartbeat = time.ticks_ms()
+    if pendingAnnouncement is not None:
+        return False
+    pendingAnnouncement = heartbeat_text()
+    return True
+
 def input_summary():
     """One line per input, for the heartbeat (C3)."""
     parts = []
@@ -1424,6 +1534,14 @@ def setup_hardware():
     """
     global led, doorBellInput, mac
     wlan.active(True)
+    # Before connecting: the setting applies to the association.
+    mode = WIFI_PM_PERFORMANCE if wifiPowerSave else WIFI_PM_NONE
+    try:
+        wlan.config(pm=mode)
+        print('WiFi power save ' + ('on' if wifiPowerSave else 'off'))
+    except Exception as e:
+        # Not fatal. An unconfigurable radio still answers the door.
+        print('Could not set WiFi power mode: ' + str(e))
     led = machine.Pin('LED', machine.Pin.OUT)
     doorBellInput = add_input('Doorbell', doorBellPin)[IN_PIN]
     # MAC lives in the wireless chip OTP. Read it from the interface we
@@ -1497,10 +1615,11 @@ def boot():
 
     Now: pins, then flash, then network. Only the first is fatal.
     """
-    global state, resetInfo, bootNumber, bootStableAt
+    global state, resetInfo, bootNumber, bootStableAt, lastHeartbeat
     # First, before anything can fail. The scratch registers are volatile
     # and a later crash would take the evidence with it.
     resetInfo = read_reset_info()
+    lastHeartbeat = time.ticks_ms()
 
     try:
         setup_hardware()
@@ -1560,7 +1679,9 @@ while True:
         
         # Check for new messages
         if (time.ticks_diff(time.ticks_ms(), lastLogCheck) > logCheckInterval):
-            print('Checking for new messages...')
+            # Log only. Printed once a minute it was pure noise, and it
+            # crowded out the events worth seeing in a long run.
+            append_to_log('Checking for new messages')
             read_message(chatId)
             lastLogCheck = time.ticks_ms()
         
@@ -1571,6 +1692,8 @@ while True:
         # ring landed in a gap the old polling loop could not have covered.
         prevPassTicks = lastPassTicks
         lastPassTicks = time.ticks_ms()
+        uptimeMs += time.ticks_diff(lastPassTicks, prevPassTicks)
+        maybe_heartbeat()
 
         sleep_fed(loopDelay)
         

@@ -95,7 +95,12 @@ class WLAN:
     def ifconfig(self):
         return ('192.0.2.10', '255.255.255.0', '192.0.2.1', '192.0.2.1')
 
-    def config(self, key):
+    pm_set = None
+
+    def config(self, *args, **kwargs):
+        if 'pm' in kwargs:
+            WLAN.pm_set = kwargs['pm']
+            return None
         return b'\xde\xad\xbe\xef\x00\x01'
 
 
@@ -202,7 +207,25 @@ def _ticks_add(a, b):
     return a + b
 
 
+class _Gc:
+    """CPython's gc has no mem_free/mem_alloc; MicroPython's does."""
+
+    def __init__(self):
+        import gc as _real
+        self._real = _real
+
+    def collect(self):
+        return self._real.collect()
+
+    def mem_free(self):
+        return 178480
+
+    def mem_alloc(self):
+        return 85000
+
+
 def install_stubs():
+    sys.modules['gc'] = _Gc()
     sys.modules['rp2'] = _Mod(country=lambda c: events.append('country'))
     sys.modules['network'] = _Mod(WLAN=WLAN, STA_IF='STA_IF',
                                   STAT_IDLE=0, STAT_CONNECTING=1,
@@ -218,6 +241,7 @@ def install_stubs():
         hexlify=lambda b, sep=None: b':'.join(b'%02x' % c for c in b))
     sys.modules['urequests'] = Requests()
     sys.modules['board'] = _Mod(doorBellPin=16)
+    WLAN.pm_set = None
     sys.modules['secrets'] = _Mod(secrets={
         'ssid': 'net', 'pw': 'pw', 'botToken': 'TOKEN', 'telegramDmUid': '-1001',
     })
@@ -253,6 +277,9 @@ check('watchdog armed after the pin, before networking',
 check('timeout stays under the RP2040 ceiling',
       ns['WDT_TIMEOUT_MS'] < 8300, True)
 check('LED was configured', ns['led'] is not None, True)
+check('power save was disabled', WLAN.pm_set, ns['WIFI_PM_NONE'])
+check('and set before connecting',
+      events.index('wlan_active') < events.index('http_get'), True)
 pin_at = events.index('pin_16')
 net_at = events.index('http_post')
 check('pin configured before any network call', pin_at < net_at, True)

@@ -97,7 +97,7 @@ Known cosmetic issue, not a fault: the "first time" wording above the boot count
 assumed a group. It is a channel, so `channel_post` parsing is correct and the warning does
 not apply.)*
 
-**Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · ✅ C5 · ✅ A9 · 🔬 B1 · 🔬 B2 · 🔬 B6 · 🔬 B4 · — C3
+**Phase 1 progress: complete.** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · ✅ C5 · ✅ A9 · ✅ A6 · ✅ A7 · ✅ B8 · 🔬 B1 · 🔬 B2 · 🔬 B4 · 🔬 B6 · 🔬 C3
 
 > **B4 was pulled forward from Phase 2.** A ten-minute bench outage left the board associated
 > but unable to pass traffic, losing two rings. Root cause: `wlan.connect()` re-issued every
@@ -381,7 +381,7 @@ Cap alerts per rolling window. A stuck-high input line currently means one messa
 5 seconds, forever. On suppression, send **one** "input appears stuck" notice rather than
 falling silent.
 
-### B8 — WiFi power save — **P2**
+### ✅ B8 — WiFi power save — **P2, awaiting hardware test**
 `wlan.config(pm=0xa11140)` for the mains-powered build; the well-known Pico W latency fix.
 
 Make it a **config flag**, not a hardcoded call — the battery build will want the opposite
@@ -459,7 +459,7 @@ The flag's actual job is distinguishing the boot-time announcement from a post-r
 Fold into whichever commit next touches those strings, or into E1 when the message text moves
 to configuration.
 
-### C3 — Heartbeat — **P0**
+### ✅ C3 — Heartbeat — **P0, awaiting hardware test**
 Periodic "alive" ping carrying uptime, free memory, RSSI, alert count and flash write count.
 Optionally a `/status` command for on-demand health.
 
