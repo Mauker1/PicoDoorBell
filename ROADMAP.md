@@ -30,9 +30,15 @@ recovery or a visible alert. Everything else is correctness and polish.
 
 | Mark | Meaning |
 | --- | --- |
-| ✅ | Landed and verified on hardware |
-| 🔬 | Landed and bench-tested, not yet on production |
+| ✅ | Done — running on production, or, for documentation and investigations, finished |
+| 🔬 | Bench-verified: tested and passing, waiting to be promoted |
+| 🧪 | On the bench **now**, verification not yet complete |
 | — | Not started |
+
+The bench is hardware too, so "verified on hardware" was never the distinction. Two things
+separate the marks: whether the production unit is running it, and whether the bench has
+actually finished testing it. 🧪 exists because "flashed" and "verified" are days apart for
+anything that needs a soak — a memory trend, a wear count, a full log.
 
 Per-item progress lives in [Sequencing](#sequencing). Bench procedure and promotion
 steps live in `docs/TESTING.md`. This section is current state only.
@@ -148,7 +154,9 @@ guard — any exception during parsing leaks the socket. This is the classic Mic
 `urequests` slow death: works for days, then `ENOMEM`. The existing `MemoryError` recovery
 path (disconnect WiFi, sleep 10 s) frees nothing.
 
-### ✅ A6 — Log lifecycle correctness — **P1, awaiting hardware test**
+### 🧪 A6 — Log lifecycle correctness — **P1**
+
+> **Still unverified:** the chunking path has never met a log long enough to split. The bench log has not passed 4096 characters since it landed.
 Three defects, one fix:
 
 1. Clear the log after a **confirmed successful send**, not only on overflow. Today
@@ -162,7 +170,9 @@ Three defects, one fix:
 
 Depends on A3.
 
-### A7 — Boot-time backlog flush — **P1**
+### 🧪 A7 — Boot-time backlog flush — **P1**
+
+> **Still unverified:** no backlog has existed to discard since it was flashed, so `Discarded N stale update(s)` has never appeared.
 Call `getUpdates` with `offset=-1` once at startup to discard the buffered backlog.
 `updateId` starts at 0, so the first poll returns up to 100 buffered updates and a stale
 `/log` from hours ago replays on every reboot.
@@ -178,7 +188,7 @@ accept it and Telegram silently ignores it.
 
 ---
 
-### ✅ A9 — Request timeouts and a pre-flight connectivity check — **P0**
+### 🔬 A9 — Request timeouts and a pre-flight connectivity check — **P0**
 Observed twice on the bench: WiFi dropped while a request was in flight, `urequests` blocked
 with no timeout, and the watchdog reset the board — once during a send, losing the ring, and
 once during `getUpdates`.
@@ -208,7 +218,7 @@ The guard that fired is the one that mattered.
 
 ## B. Reliability
 
-### ✅ B1 — IRQ-driven doorbell input — **P0, awaiting hardware test**
+### 🔬 B1 — IRQ-driven doorbell input — **P0**
 **The headline fix.** `Pin.irq(trigger=IRQ_RISING)` sets a latch flag; the main loop only
 drains it.
 
@@ -258,7 +268,7 @@ the count in the heartbeat (C3).
 > be over-engineering. The point is only to avoid a structure that would later have to be
 > undone.
 
-### ✅ B2 — Watchdog — **P0, awaiting hardware test**
+### 🔬 B2 — Watchdog — **P0**
 `machine.WDT`, fed from the main loop. Timeout must accommodate **both** a slow TLS
 handshake (~8 s) **and** a worst-case flash sector erase.
 
@@ -292,7 +302,7 @@ created**. With no watchdog, the device is dead until someone power-cycles it.
 Also: remove the message-sending side effect from inside `connect_wifi()`. Connection and
 notification are separate concerns.
 
-### ✅ B4 — Bounded WiFi reconnection with backoff — **P1, awaiting hardware test**
+### 🔬 B4 — Bounded WiFi reconnection with backoff — **P1**
 > **Mark the reset as intentional.** The `machine.reset()` after N failed cycles would
 > otherwise be indistinguishable from a watchdog bite — both read as `warm-reset`. Set a
 > marker in a spare scratch register before resetting, and clear it once read, so
@@ -313,7 +323,7 @@ flaky moment into notification noise.
 Classify: network errors → retry; parse errors → log and continue; `MemoryError` →
 `gc.collect()`, then reset if it recurs.
 
-### ✅ B6 — Offline event queue — **P0, awaiting hardware test**
+### 🔬 B6 — Offline event queue — **P0**
 > **Demonstrated cleanly.** With A9 in place, dropping WiFi just after a press produces:
 > `Doorbell ring, 202ms` followed by `WiFi is disconnected.` — the ring detected, measured,
 > counted and logged, then lost. No crash, no error, no trace beyond that line. This is now
@@ -354,7 +364,7 @@ Cap alerts per rolling window. A stuck-high input line currently means one messa
 5 seconds, forever. On suppression, send **one** "input appears stuck" notice rather than
 falling silent.
 
-### ✅ B8 — WiFi power save — **P2, awaiting hardware test**
+### 🔬 B8 — WiFi power save — **P2**
 `wlan.config(pm=0xa11140)` for the mains-powered build; the well-known Pico W latency fix.
 
 Make it a **config flag**, not a hardcoded call — the battery build will want the opposite
@@ -387,7 +397,9 @@ log to console on *every* error.
 handled by a compact code in the scratch registers plus, optionally, a *single* flash write
 on the way to a reset. Never continuous log persistence.
 
-### ✅ C3 — Heartbeat — **P0, awaiting hardware test**
+### 🧪 C3 — Heartbeat — **P0**
+
+> **Still unverified:** the memory trend needs days, not hours. One reading is a baseline, not a verification.
 Periodic "alive" ping carrying uptime, free memory, RSSI, alert count and flash write count.
 Optionally a `/status` command for on-demand health.
 
@@ -397,7 +409,7 @@ alongside B1 in value.
 Keep the payload schema **extensible** so battery voltage can be added later without a
 breaking change.
 
-### ✅ C4 — Reset cause and boot counter (Tier 1) — **P1, hardware-verified**
+### ✅ C4 — Reset cause and boot counter (Tier 1) — **P1**
 Read `machine.reset_cause()` at boot, keep a boot counter in a watchdog scratch
 register, log both, and include them in the startup message and heartbeat.
 
@@ -515,7 +527,7 @@ committed deliverable.
 > **Pin assignments already extracted.** The two boards use different doorbell input pins
 > (GP16 vs GP18), so `doorBellPin` moved to a per-revision `board.py` ahead of schedule. The
 > rest of E1 — intervals, message strings, country code, polarity, feature toggles — still
-> belongs to Phase 2, and should go somewhere other than `board.py`, which is deliberately
+> belongs to Phase 3, and should go somewhere other than `board.py`, which is deliberately
 > limited to hardware wiring.
 
 `config.py` holding: GPIO pin, country code, all intervals, all message strings,
@@ -920,7 +932,7 @@ Costs one extra erase per write — irrelevant at these frequencies, and it buys
 **Do not rewrite `secrets.py`.** Runtime state belongs in a separate file; rewriting a source
 file the user also edits by hand invites a merge conflict on a microcontroller.
 
-### ✅ I3 — Wear instrumentation — **P2**
+### 🔬 I3 — Wear instrumentation — **P2**
 Keep a monotonic write counter inside the state file and report it in the heartbeat (C3).
 
 This makes wear **observable** rather than theoretical. If the counter climbs faster than
@@ -987,15 +999,22 @@ Nothing to do until the upgrade happens; recorded so it is not rediscovered late
 ## Sequencing
 
 Two axes: sections say what *kind* of work an item is, phases say *when*. An item's
-priority tag and its phase are independent — `E2` is P1 but sits in Phase 3, because it
-should not happen before the current tree has proven itself in place.
+priority tag and its phase are independent — `E2` is P1 but waits on the production
+milestone below, because it should not happen before the current tree has proven itself in
+place.
+
+Phases are numbered in the order they happen. Restructuring was originally third and
+correctness second; bench findings reversed them, so the numbers were swapped to match
+rather than left as a trap for anyone reading top to bottom.
 
 ### ✅ Phase 1 — Stop the bleeding — complete
 
-✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → ✅ `C4` → ✅ `C5` → ✅ `A9` →
-🔬 `B1` → 🔬 `B2` → 🔬 `B4` → 🔬 `A6` → 🔬 `A7` → 🔬 `B6` → 🔬 `B8` → 🔬 `C3`
+✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → ✅ `C4` → ✅ `C5` →
+🔬 `A9` → 🔬 `B1` → 🔬 `B2` → 🔬 `B4` → 🔬 `B6` → 🔬 `B8` →
+🧪 `A6` → 🧪 `A7` → 🧪 `C3`
 
-✅ verified on hardware · 🔬 bench-tested, not yet on production
+Production runs everything up to `C5`. The rest is on the bench: most of it verified, three
+items still under test. Each 🧪 item says what it is waiting on.
 
 Five items were pulled forward from later phases by bench findings rather than plan:
 
@@ -1017,23 +1036,23 @@ Production runs the **C5 build**. Everything from `B1` onward is bench-only.
 2. Promote the current tree to production.
 3. Let the reboot dataset accumulate — a week or two.
 
-Nothing in Phase 2 should start before this. The reboot investigation is the reason `C4`
+Nothing in Phase 2 or 3 should start before this. The reboot investigation is the reason `C4`
 exists, it only produces data on the production unit, and a large refactor on top of code
 that has never run in place would confuse both.
 
-### Phase 3 — Restructure *(before most of Phase 2)*
+### Phase 2 — Restructure
 
 `F1` → `E2` → `F2` → `F3`
 
-**Deliberately ahead of Phase 2.** `E2` is the highest-priority item left: `main.py` is 1720
-lines, and every Phase 2 change makes it longer. Splitting first means those changes land in
-files that make sense.
+`E2` is the highest-priority item left: `main.py` is 1720 lines, and every correctness
+change in Phase 3 makes it longer. Splitting first means those changes land in files that
+make sense.
 
 **Tests before the refactor, not after.** All eight test files reach into `main.py` by AST
 extraction and break on the first move. `F1` rewrites them as plain imports, one module at a
 time.
 
-### Phase 2 — Correctness
+### Phase 3 — Correctness
 
 `A1` · `A2` · `A4` · `C1` · `E1` · `D2` · `D3` · `B5` · `I1` · `H1` · `C6`
 

@@ -16,7 +16,7 @@ DOC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 SECTION = re.compile(r'^## ([A-Z])\. ', re.M)
 TOP = re.compile(r'^## ')
-ITEM = re.compile(r'^### (?:✅ |🔬 )?([A-Z])(\d+) — ')
+ITEM = re.compile(r'^### (?:✅ |🔬 |🧪 )?([A-Z])(\d+) — ')
 ANY_ITEM = re.compile(r'^### ')
 
 problems = []
@@ -67,11 +67,32 @@ for letter, numbers in seen.items():
     if duplicates:
         fail('section %s has duplicate items: %s' % (letter, sorted(duplicates)))
 
-# 3. No doubled horizontal rules, which reordering tends to leave behind.
+# 3. A status mark must not be restated in prose. Seven headings carried
+#    'awaiting hardware test' long after the bench had tested them, because
+#    the suffix had to be maintained separately from the mark.
+STALE = ('awaiting hardware test', 'hardware-verified', 'not yet tested',
+         'awaiting test')
+for line in lines:
+    if ANY_ITEM.match(line):
+        for phrase in STALE:
+            if phrase in line.lower():
+                fail('heading restates its status in prose (%r): %s'
+                     % (phrase, line.strip()))
+
+# 4. An item marked as under test must say what it is waiting on, or the
+#    mark decays into "someone flashed this once" and nobody can tell what
+#    would finish it.
+for i, line in enumerate(lines):
+    if line.startswith('### \U0001f9ea '):
+        window = '\n'.join(lines[i + 1:i + 6])
+        if 'Still unverified:' not in window:
+            fail('item under test does not say what it awaits: ' + line.strip())
+
+# 5. No doubled horizontal rules, which reordering tends to leave behind.
 if re.search(r'\n---\s*\n\s*---\s*\n', text):
     fail('doubled horizontal rule')
 
-# 4. Every item referenced elsewhere in the document actually exists.
+# 6. Every item referenced elsewhere in the document actually exists.
 defined = set('%s%d' % (l, n) for l, ns in seen.items() for n in ns)
 referenced = set(re.findall(r'`([A-Z]\d+)`', text))
 missing = sorted(referenced - defined)
