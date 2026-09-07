@@ -30,81 +30,52 @@ recovery or a visible alert. Everything else is correctness and polish.
 
 | Mark | Meaning |
 | --- | --- |
-| ✅ | Landed and tested |
-| 🔬 | Landed, awaiting hardware verification |
+| ✅ | Landed and verified on hardware |
+| 🔬 | Landed and bench-tested, not yet on production |
 | — | Not started |
 
-### 🚀 Promoted to production
+Per-item progress lives in [Sequencing](#sequencing). Bench procedure and promotion
+steps live in `docs/TESTING.md`. This section is current state only.
 
-The production unit is running the C5 build: `Doorbell input ready on GP16`, startup message
-delivered to the production group, `state.json` written at the 60 s gate. MAC
-`d8:3a:dd:af:cc:82`, distinct from the bench unit, so the two are not confusable.
+### What is running where
 
-**Discard `boot #1` from the dataset.** It reported `verdict=power` on a Thonny soft reboot,
-which is the documented first-run ambiguity: the magic word had never been written, so `cold`
-was inevitable, and `CHIP_RESET` still held `POR/BOD` from the last time the board was
-powered. Affects only the first boot after a flash. **The reboot dataset starts at boot #2.**
+| | Firmware | Notes |
+| --- | --- | --- |
+| **Production** | The C5 build | Still polls the input; no watchdog, no queue. Everything from `B1` onward is bench-only. |
+| **Bench** | Current tree | MAC `28:cd:c1:00:10:ed` |
 
-✅ **Both remaining steps done.** A real ring delivered in about 2 s, matching the bench, and
-the RUN cable is reconnected.
+Production MAC is `d8:3a:dd:af:cc:82`, so the two units are not confusable.
 
-✅ **Positive control established.** Re-plugging the reset connector produced
-`verdict=run-pin chip=RUN raw=0x00010000` on the production board. The register map works on
-this unit, not just the bench one, and the instrument is now calibrated against a known
-input: **if the spontaneous reboots come through the RUN line, they will say so.**
+### The reboot dataset
 
-This supersedes the elimination approach entirely. The earlier plan — disconnect the cable,
-wait, interpret silence — was weak precisely because no fault could be demonstrated in the
-known-bad configuration. Detection replaces it: one labelled event is now enough.
+`C4` is deployed on production and calibrated: re-plugging the reset connector produced
+`verdict=run-pin chip=RUN raw=0x00010000` there, so **if the spontaneous reboots come
+through the RUN line, they will say so.** That replaced the earlier elimination approach,
+which was weak because no fault could be demonstrated in the known-bad configuration.
 
-The re-plug itself remains a calibration event, not a data point. Connector travel is
-mechanical and does not occur in service (queue item 7).
+**Discard `boot #1`.** It reported `verdict=power` on a soft reboot — the documented
+first-run ambiguity, since the magic word had never been written. The dataset starts at
+`boot #2`.
 
-Note that production runs the **C5 build, not B1** — it still polls the input with the 5 s
-blocking sleep. B1 goes through the same bench-then-promote cycle. The reboot data is
-unaffected either way.
+The re-plug itself was a calibration event, not a data point: connector travel is mechanical
+and does not happen in service.
 
-### Bench validation complete — cleared for production
-
-Verified end to end on the bench unit at v1.23.0: boot ordering, reset diagnosis across all
-four paths, the per-revision board file, the request layer, the flash write and its stability
-gate, the schema, and a doorbell press delivering to Telegram.
-
-Promotion steps:
-
-1. Back up production's current `main.py` on the device under another name.
-2. Copy `boards/board_v1_2.py` to the device as `board.py` (GP16). Without it the firmware
-   refuses to start — intended, but not mid-install.
-3. Leave production's `secrets.py` alone.
-4. Flash `main.py`.
-5. Verify `Doorbell input ready on GP16`, a startup message in the production group, and
-   `state.json` appearing after 60 s with `boots: 1`.
-6. Test a real ring.
-7. **Reconnect the RUN cable.** With C4 deployed, direct measurement beats elimination.
-
-Reading the reboot data:
+### Reading a reboot
 
 | Verdict | Meaning | Next step |
 | --- | --- | --- |
 | `power` | Supply — brownout or dip | Swap the USB adapter (queue item 9) |
-| `run-pin` | RUN line | Bisect: lift the on-board button |
-| `warm-reset` | Watchdog or soft reset | Unexpected before B2 exists |
-| `unstable=N` | Boot loop, N attempts since the last stable start | Investigate before it recurs |
+| `run-pin` | RUN line pulled low | Bisect: lift the on-board button |
+| `watchdog` | A real timeout; the loop stalled past 8 s | Check what preceded it |
+| `self-reset` | The firmware chose it; `reason=` says why | Read the reason |
+| `warm-reset` | Soft reboot | Only expected on the bench |
+| `unstable=N` | N attempts since the last stable boot | A loop; investigate |
 
-Known cosmetic issue, not a fault: the "first time" wording above the boot counter (C6).
+`watchdog` and `self-reset` cannot occur on production until the current tree is promoted.
 
-*(An earlier note here warned about spurious reconnects when anyone posts in the chat. That
-assumed a group. It is a channel, so `channel_post` parsing is correct and the warning does
-not apply.)*
+### Known cosmetic issue
 
-**Phase 1 progress: complete.** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · ✅ C5 · ✅ A9 · ✅ A6 · ✅ A7 · ✅ B8 · 🔬 B1 · 🔬 B2 · 🔬 B4 · 🔬 B6 · 🔬 C3
-
-> **B4 was pulled forward from Phase 2.** A ten-minute bench outage left the board associated
-> but unable to pass traffic, losing two rings. Root cause: `wlan.connect()` re-issued every
-> three seconds, ~200 times, wedging the cyw43 stack.
-
-Everything marked ✅ has host-side test coverage but has **not yet run on real
-hardware**. See [Open questions](#open-questions) for what that gates.
+The startup message still says "for the first time" above a boot counter (`C6`).
 
 ---
 
@@ -204,6 +175,34 @@ accept it and Telegram silently ignores it.
 > parses as key `offset` with value `123?chat_id=456`, and Telegram reads the leading
 > digits and stops at the first non-digit. It is not a bug — it is reliance on undocumented
 > parser leniency. Cheap to fix, low priority.
+
+---
+
+### ✅ A9 — Request timeouts and a pre-flight connectivity check — **P0**
+Observed twice on the bench: WiFi dropped while a request was in flight, `urequests` blocked
+with no timeout, and the watchdog reset the board — once during a send, losing the ring, and
+once during `getUpdates`.
+
+The earlier three-minute outage test passed only because the outage began while the loop was
+idle, so `connect_wifi()` noticed and retried, feeding as it went. An outage that starts
+*during* a request takes the other path.
+
+Two guards: skip the request entirely when WiFi is already down, and pass a 5 s timeout when
+`urequests` supports it, falling back to an untimed call otherwise. Neither is complete — a
+network that vanishes mid-handshake can still exceed the timeout — so the watchdog stays the
+final backstop. But a reset should be the last resort, not the routine answer to a flaky
+router.
+
+**This gated promotion.** Without it, a flaky network would have produced repeated watchdog
+reboots on the unit being used to measure reboots.
+
+✅ **Verified on hardware.** A network outage now produces sixteen retry cycles and a clean
+reconnection with no reset, where the same test previously reset the board. The reconnect
+message also carries no reset summary, confirming that fix.
+
+Inconclusive: no "urequests has no timeout support" line appeared. Either the build accepts
+the parameter, or the pre-flight check caught every case before the timeout path was reached.
+The guard that fired is the one that mattered.
 
 ---
 
@@ -314,32 +313,6 @@ flaky moment into notification noise.
 Classify: network errors → retry; parse errors → log and continue; `MemoryError` →
 `gc.collect()`, then reset if it recurs.
 
-### ✅ A9 — Request timeouts and a pre-flight connectivity check — **P0**
-Observed twice on the bench: WiFi dropped while a request was in flight, `urequests` blocked
-with no timeout, and the watchdog reset the board — once during a send, losing the ring, and
-once during `getUpdates`.
-
-The earlier three-minute outage test passed only because the outage began while the loop was
-idle, so `connect_wifi()` noticed and retried, feeding as it went. An outage that starts
-*during* a request takes the other path.
-
-Two guards: skip the request entirely when WiFi is already down, and pass a 5 s timeout when
-`urequests` supports it, falling back to an untimed call otherwise. Neither is complete — a
-network that vanishes mid-handshake can still exceed the timeout — so the watchdog stays the
-final backstop. But a reset should be the last resort, not the routine answer to a flaky
-router.
-
-**This gated promotion.** Without it, a flaky network would have produced repeated watchdog
-reboots on the unit being used to measure reboots.
-
-✅ **Verified on hardware.** A network outage now produces sixteen retry cycles and a clean
-reconnection with no reset, where the same test previously reset the board. The reconnect
-message also carries no reset summary, confirming that fix.
-
-Inconclusive: no "urequests has no timeout support" line appeared. Either the build accepts
-the parameter, or the pre-flight check caught every case before the timeout path was reached.
-The guard that fired is the one that mattered.
-
 ### ✅ B6 — Offline event queue — **P0, awaiting hardware test**
 > **Demonstrated cleanly.** With A9 in place, dropping WiFi just after a press produces:
 > `Doorbell ring, 202ms` followed by `WiFi is disconnected.` — the ring detected, measured,
@@ -414,6 +387,38 @@ log to console on *every* error.
 handled by a compact code in the scratch registers plus, optionally, a *single* flash write
 on the way to a reset. Never continuous log persistence.
 
+### ✅ C3 — Heartbeat — **P0, awaiting hardware test**
+Periodic "alive" ping carrying uptime, free memory, RSSI, alert count and flash write count.
+Optionally a `/status` command for on-demand health.
+
+This is the single change that converts silent failure into visible failure. Rank it
+alongside B1 in value.
+
+Keep the payload schema **extensible** so battery voltage can be added later without a
+breaking change.
+
+### ✅ C4 — Reset cause and boot counter (Tier 1) — **P1, hardware-verified**
+Read `machine.reset_cause()` at boot, keep a boot counter in a watchdog scratch
+register, log both, and include them in the startup message and heartbeat.
+
+> **Must land before B2.** The production unit reboots intermittently — correlated with
+> switching mains loads on the same circuit — and the cause is unknown. Today every restart
+> looks identical: a startup message in Telegram. Once the watchdog exists, a wedged
+> network stack produces a reset indistinguishable from that mystery unless the cause is
+> recorded first.
+
+Distinguishes:
+
+| Cause | Meaning |
+| --- | --- |
+| `PWRON_RESET` | Supply dropped — brownout or mains dip |
+| `HARD_RESET` | RUN pin driven low — button, or transient pickup on the trace |
+| `WDT_RESET` | Firmware wedged (once B2 exists) |
+| `DEEPSLEEP_RESET` | Future battery build only |
+
+Roughly 20 lines. Converts an ongoing mystery into a dataset, and its value grows with
+uptime — so it wants to reach the production device early.
+
 ### ✅ C5 — Persist the boot counter to Tier 2 — **P1**
 The Tier 1 boot counter counts almost nothing useful. Bench testing showed any hardware
 reset clears the scratch area — a power cycle and a RUN press both report `boot #1`. It
@@ -458,38 +463,6 @@ The flag's actual job is distinguishing the boot-time announcement from a post-r
 
 Fold into whichever commit next touches those strings, or into E1 when the message text moves
 to configuration.
-
-### ✅ C3 — Heartbeat — **P0, awaiting hardware test**
-Periodic "alive" ping carrying uptime, free memory, RSSI, alert count and flash write count.
-Optionally a `/status` command for on-demand health.
-
-This is the single change that converts silent failure into visible failure. Rank it
-alongside B1 in value.
-
-Keep the payload schema **extensible** so battery voltage can be added later without a
-breaking change.
-
-### ✅ C4 — Reset cause and boot counter (Tier 1) — **P1, hardware-verified**
-Read `machine.reset_cause()` at boot, keep a boot counter in a watchdog scratch
-register, log both, and include them in the startup message and heartbeat.
-
-> **Must land before B2.** The production unit reboots intermittently — correlated with
-> switching mains loads on the same circuit — and the cause is unknown. Today every restart
-> looks identical: a startup message in Telegram. Once the watchdog exists, a wedged
-> network stack produces a reset indistinguishable from that mystery unless the cause is
-> recorded first.
-
-Distinguishes:
-
-| Cause | Meaning |
-| --- | --- |
-| `PWRON_RESET` | Supply dropped — brownout or mains dip |
-| `HARD_RESET` | RUN pin driven low — button, or transient pickup on the trace |
-| `WDT_RESET` | Firmware wedged (once B2 exists) |
-| `DEEPSLEEP_RESET` | Future battery build only |
-
-Roughly 20 lines. Converts an ongoing mystery into a dataset, and its value grows with
-uptime — so it wants to reach the production device early.
 
 ---
 
@@ -605,6 +578,19 @@ Roughly: `config.py`, `wifi.py`, `telegram.py`, `applog.py`, `doorbell.py`, and 
 > the moment the loop is wrapped in a function. This refactor must be done deliberately,
 > not mechanically — and **after** F1.
 
+### E3 — Notifier abstraction — **P3**
+A minimal `send(event)` interface so Telegram becomes one backend among several. Enables E4
+without further surgery.
+
+### E4 — MQTT / Home Assistant backend — **P4**
+Dramatically lighter and lower-latency than TLS HTTP on this chip, and what the
+home-automation audience actually wants. With HA discovery the doorbell becomes a
+first-class entity.
+
+### E5 — Long polling — **P3**
+`getUpdates` with a `timeout` parameter reduces request volume — but it **blocks**, which is
+only safe once B1 has decoupled input capture from the loop. **Strictly ordered after B1.**
+
 ### E6 — Do not offload networking to core 1 — **decision record**
 The RP2040 has two Cortex-M0+ cores and MicroPython exposes core 1 via `_thread`. Moving the
 network work there is a natural idea. **Rejected.**
@@ -634,19 +620,6 @@ Supporting reasons:
 
 **Where it would be legitimate:** genuine concurrent work, such as audio streaming to a SIP
 extension. Not for stopping one HTTPS POST from blocking a pin read.
-
-### E3 — Notifier abstraction — **P3**
-A minimal `send(event)` interface so Telegram becomes one backend among several. Enables E4
-without further surgery.
-
-### E4 — MQTT / Home Assistant backend — **P4**
-Dramatically lighter and lower-latency than TLS HTTP on this chip, and what the
-home-automation audience actually wants. With HA discovery the doorbell becomes a
-first-class entity.
-
-### E5 — Long polling — **P3**
-`getUpdates` with a `timeout` parameter reduces request volume — but it **blocks**, which is
-only safe once B1 has decoupled input capture from the loop. **Strictly ordered after B1.**
 
 ---
 
@@ -693,6 +666,65 @@ VSYS via ADC3, with the GPIO25-high sequencing the Pico W requires. Report in th
 warn on low.
 
 Deferred: no hardware to read on V1.1.
+
+### G3 — Input signal conditioning — **P2**
+Document and handle the AC-bell case, where a single PC817 produces a pulse train at mains
+frequency rather than a clean level.
+
+✅ **Resolved for this hardware.** The deh0511 pinout for the 7630 Wohntelefon documents
+terminal 04 as a bell-signal output at approximately 5 V **DC**. There is no AC pulse train
+to coalesce, and the bridge-rectifier inference from mikrocontroller.net was correct.
+
+G3 therefore stays open only as a **generic warning for other users**, whose bells may well
+be AC. It is not something this installation needs to handle.
+
+**Bounce is confirmed by prior art, not merely suspected.** Bracke reports having had to
+solve bell-input debouncing among his first problems on the same TwinBus system. B1's
+debounce is therefore mandatory rather than defensive.
+
+Interacts directly with B1's debounce parameters. Decide: solve in software (pulse-train
+coalescing) or recommend an RC stretcher on the opto output.
+
+### G4 — Pico 2 W support — **P3**
+Verify and document. It is the board most people would buy today.
+
+### G5 — Preserve the deep-sleep path — **P3, architectural constraint**
+A future battery build will want `lightsleep`/`deepsleep` with IRQ wake, which is
+incompatible with a busy main loop that assumes it runs forever.
+
+Nothing to build now — but E2's module split must keep the event loop **swappable** rather
+than baking `while True: sleep(1)` into the architecture. Cheap to honour now, expensive to
+retrofit.
+
+> On battery, unexpected power loss goes from rare to routine, which raises the value of
+> B6's flash snapshot. Another reason to build the mechanism now even if it triggers rarely.
+
+### G6 — RUN pin noise immunity — **P1**
+Fit **100 nF from RUN to GND**, as close to the pin as layout allows, plus a **10 kΩ
+pull-up from RUN to 3V3**.
+
+The RP2040's internal RUN pull-up is weak (~50 kΩ), leaving a high-impedance node with a
+length of wire attached and little noise immunity.
+
+> **Note on evidence.** This item was originally justified by the observation that re-mating
+> the reset connector rebooted the board. That observation has since been set aside as an
+> artifact of connector travel — see hardware queue item 6 — and is *not* evidence for
+> electromagnetic pickup. G6 remains worth doing as standard practice for a RUN line with
+> wire attached, but it is **precautionary**: nothing currently confirms RUN as the cause,
+> and C4 should decide whether it justifies a board revision.
+
+The capacitor gives roughly a 5 ms time constant against the internal pull-up: long enough
+to swallow a transient, short enough not to interfere with the button or startup. The
+external pull-up lowers the node impedance about 5×, so a given injected charge moves the
+voltage far less. Together they are meaningfully better than either alone.
+
+Prototype on protoboard first, then a carrier board revision. Also check whether the reset
+cable runs near the doorbell wiring or mains — rerouting may help as much as the capacitor.
+
+> This establishes that the RUN line *can* be disturbed trivially. It does not yet prove
+> the mains-switching reboots share that mechanism: plugging a connector is a physical
+> disturbance, a light switch is an electromagnetic one. C4 closes that gap — `chip=RUN` on
+> a reboot coinciding with a light switch is the confirmation.
 
 ### ✅ G7 — Characterise the ring pulse — **P1, was blocking B1**
 Measure how long the optocoupler output actually stays asserted during a ring.
@@ -742,37 +774,6 @@ Two ways to measure, either is fine:
 While measuring, also capture **whether terminal 04 and the ED line assert simultaneously or
 with an offset**. That sets the correlation window G9 needs.
 
-### G10 — Confirm the TwinBus burst interval — **P2**
-Terminal 04 does **not** track the button: a ~6 s press produces one pulse, so the system
-debounces internally and emits its own fixed signal. That removes the risk of tuning
-`MIN_PULSE_MS` too high — a quick jab should still produce a full-width pulse.
-
-But a held button reportedly produces repeated bursts: tone, pause, tone. If the burst
-interval exceeds `ALERT_LOCKOUT_MS` (5 s), a visitor leaning on the button generates several
-notifications.
-
-No oscilloscope needed — the firmware is the instrument. `Doorbell ring, NNNNms` gives the
-width, and successive entries give the interval. Hold the real doorbell for fifteen seconds
-and read the log.
-
-### G3 — Input signal conditioning — **P2**
-Document and handle the AC-bell case, where a single PC817 produces a pulse train at mains
-frequency rather than a clean level.
-
-✅ **Resolved for this hardware.** The deh0511 pinout for the 7630 Wohntelefon documents
-terminal 04 as a bell-signal output at approximately 5 V **DC**. There is no AC pulse train
-to coalesce, and the bridge-rectifier inference from mikrocontroller.net was correct.
-
-G3 therefore stays open only as a **generic warning for other users**, whose bells may well
-be AC. It is not something this installation needs to handle.
-
-**Bounce is confirmed by prior art, not merely suspected.** Bracke reports having had to
-solve bell-input debouncing among his first problems on the same TwinBus system. B1's
-debounce is therefore mandatory rather than defensive.
-
-Interacts directly with B1's debounce parameters. Decide: solve in software (pulse-train
-coalescing) or recommend an RC stretcher on the opto output.
-
 ### G8 — Do not power the Pico from the bus — **P3, decision record**
 Terminal 05 on the 7630 carries the +24 V bus supply. It is tempting: if the reboots turn
 out to be supply-related, powering from the bus would remove the USB adapter from the
@@ -821,50 +822,45 @@ Costs one optocoupler, one GPIO, and a time-window check in software.
 Interacts with B1: two latched inputs rather than one, and the discrimination happens after
 both have been sampled rather than in either ISR.
 
-### G6 — RUN pin noise immunity — **P1**
-Fit **100 nF from RUN to GND**, as close to the pin as layout allows, plus a **10 kΩ
-pull-up from RUN to 3V3**.
+### G10 — Confirm the TwinBus burst interval — **P2**
+Terminal 04 does **not** track the button: a ~6 s press produces one pulse, so the system
+debounces internally and emits its own fixed signal. That removes the risk of tuning
+`MIN_PULSE_MS` too high — a quick jab should still produce a full-width pulse.
 
-The RP2040's internal RUN pull-up is weak (~50 kΩ), leaving a high-impedance node with a
-length of wire attached and little noise immunity.
+But a held button reportedly produces repeated bursts: tone, pause, tone. If the burst
+interval exceeds `ALERT_LOCKOUT_MS` (5 s), a visitor leaning on the button generates several
+notifications.
 
-> **Note on evidence.** This item was originally justified by the observation that re-mating
-> the reset connector rebooted the board. That observation has since been set aside as an
-> artifact of connector travel — see hardware queue item 6 — and is *not* evidence for
-> electromagnetic pickup. G6 remains worth doing as standard practice for a RUN line with
-> wire attached, but it is **precautionary**: nothing currently confirms RUN as the cause,
-> and C4 should decide whether it justifies a board revision.
-
-The capacitor gives roughly a 5 ms time constant against the internal pull-up: long enough
-to swallow a transient, short enough not to interfere with the button or startup. The
-external pull-up lowers the node impedance about 5×, so a given injected charge moves the
-voltage far less. Together they are meaningfully better than either alone.
-
-Prototype on protoboard first, then a carrier board revision. Also check whether the reset
-cable runs near the doorbell wiring or mains — rerouting may help as much as the capacitor.
-
-> This establishes that the RUN line *can* be disturbed trivially. It does not yet prove
-> the mains-switching reboots share that mechanism: plugging a connector is a physical
-> disturbance, a light switch is an electromagnetic one. C4 closes that gap — `chip=RUN` on
-> a reboot coinciding with a light switch is the confirmation.
-
-### G4 — Pico 2 W support — **P3**
-Verify and document. It is the board most people would buy today.
-
-### G5 — Preserve the deep-sleep path — **P3, architectural constraint**
-A future battery build will want `lightsleep`/`deepsleep` with IRQ wake, which is
-incompatible with a busy main loop that assumes it runs forever.
-
-Nothing to build now — but E2's module split must keep the event loop **swappable** rather
-than baking `while True: sleep(1)` into the architecture. Cheap to honour now, expensive to
-retrofit.
-
-> On battery, unexpected power loss goes from rare to routine, which raises the value of
-> B6's flash snapshot. Another reason to build the mechanism now even if it triggers rarely.
+No oscilloscope needed — the firmware is the instrument. `Doorbell ring, NNNNms` gives the
+width, and successive entries give the interval. Hold the real doorbell for fifteen seconds
+and read the log.
 
 ---
 
 ## H. Documentation
+
+### H1 — Broken links and typos — **P1, trivial**
+- Malformed SMD gerber URL: `.../blob/main/(assets/Gerber_...zip)` — parenthesis inside the
+  URL, 404s
+- Both gerber links reference the same filename; unclear which is which
+- "EF2 file" → **UF2**, two occurrences
+- Parts list says **180 Ω**; "Final details" says **185 Ω equivalent**
+- Parts list "5.1 ohms" — verify; 5.1 kΩ seems far more plausible
+- Heading reads "V 1.2 schematics" but the image is `schematicsV01_1.png`
+
+### H2 — Setup rewrite — **P2**
+Document the DM, group, supergroup and channel paths properly now that all four are
+supported. Include the supergroup migration caveat and the BotFather privacy-mode setting.
+
+### H3 — Repo hygiene — **P3**
+Tagged releases matched to PCB revisions, a CHANGELOG, and a troubleshooting section built
+from the failure modes catalogued here.
+
+### ✅ H4 — Architecture document — **P2**
+`docs/ARCHITECTURE.md` describes how the firmware works and why: the state tier model, the
+boot sequence, the HTTP request layer, the on-device file layout. Kept separate from the
+README (a build guide) and from this file (a plan). Updated alongside each commit that
+changes behaviour it describes.
 
 ### H5 — Ritto/TwinBus safety warning — **P2**
 The README treats this as a standalone doorbell project. It is not: the TwinBus is a
@@ -888,29 +884,6 @@ Per the deh0511 pinout, the ones this project touches are **04** (bell signal ou
 should be left alone. Several points on that connector remain undocumented. Credit
 `deh0511.de/twinbus` as the source rather than reproducing the table wholesale. Also worth linking the prior art
 (`deh0511.de/twinbus`, beechy.de, `tuxuser/ritto_doorbell`) as pinout references.
-
-### H1 — Broken links and typos — **P1, trivial**
-- Malformed SMD gerber URL: `.../blob/main/(assets/Gerber_...zip)` — parenthesis inside the
-  URL, 404s
-- Both gerber links reference the same filename; unclear which is which
-- "EF2 file" → **UF2**, two occurrences
-- Parts list says **180 Ω**; "Final details" says **185 Ω equivalent**
-- Parts list "5.1 ohms" — verify; 5.1 kΩ seems far more plausible
-- Heading reads "V 1.2 schematics" but the image is `schematicsV01_1.png`
-
-### H2 — Setup rewrite — **P2**
-Document the DM, group, supergroup and channel paths properly now that all four are
-supported. Include the supergroup migration caveat and the BotFather privacy-mode setting.
-
-### ✅ H4 — Architecture document — **P2**
-`docs/ARCHITECTURE.md` describes how the firmware works and why: the state tier model, the
-boot sequence, the HTTP request layer, the on-device file layout. Kept separate from the
-README (a build guide) and from this file (a plan). Updated alongside each commit that
-changes behaviour it describes.
-
-### H3 — Repo hygiene — **P3**
-Tagged releases matched to PCB revisions, a CHANGELOG, and a troubleshooting section built
-from the failure modes catalogued here.
 
 ---
 
@@ -1008,57 +981,93 @@ Nothing to do until the upgrade happens; recorded so it is not rediscovered late
 
 ## Sequencing
 
-### Phase 1 — Stop the bleeding
-✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → ✅ `C4` → ✅ `C5` → 🔬 `B1` → 🔬 `B2` → `B2` → `B6` → `C3`
+Two axes: sections say what *kind* of work an item is, phases say *when*. An item's
+priority tag and its phase are independent — `E2` is P1 but sits in Phase 3, because it
+should not happen before the current tree has proven itself in place.
 
-**Hardware checkpoint after B3**, before B1. Everything landed so far is host-tested only,
-and B1 changes interrupt behaviour — the hardest thing to debug with unverified changes
-underneath it. B1 and B2 additionally *cannot* be validated in stubs: debounce timing
-against a real optocoupler and a watchdog timeout that must survive a real TLS handshake
-both need the bench unit.
+### ✅ Phase 1 — Stop the bleeding — complete
 
-Small, surgical, no restructuring. After this the device stops losing presses and stops
-failing silently. **The bulk of the early effort belongs here.**
+✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → ✅ `C4` → ✅ `C5` → ✅ `A9` →
+🔬 `B1` → 🔬 `B2` → 🔬 `B4` → 🔬 `A6` → 🔬 `A7` → 🔬 `B6` → 🔬 `B8` → 🔬 `C3`
 
-`I2` lands ahead of `A4` because the migration fix needs somewhere safe to write, and the
-atomic-write helper is roughly fifteen lines. Establish `I1`'s tier discipline at the same
-time — before anyone adds a second `open(..., 'w')` somewhere convenient and quietly starts
-writing on a timer.
+✅ verified on hardware · 🔬 bench-tested, not yet on production
 
-`C4` lands ahead of `B2` so that watchdog resets stay distinguishable from the existing
-unexplained reboots.
+Five items were pulled forward from later phases by bench findings rather than plan:
 
-### Phase 2 — Correctness
-`A1` · `A2` · `A4` · `A6` · `A7` · `B4` · `B5` · `C1` · `D2` · `D3` · `E1` · `I1` · `H1`
+| Item | Why it moved |
+| --- | --- |
+| `A9` | A dropped network mid-request hung `urequests` and the watchdog reset the board |
+| `B4` | `wlan.connect()` re-issued ~200 times left the stack associated but carrying nothing |
+| `A6` | `/log` stopped working once the log passed Telegram's 4096-character limit |
+| `A7` | Every reset replayed Telegram's backlog, re-running old commands |
+| `B8` | WiFi power save was a live suspect for the timeout failures |
 
-The device now behaves correctly across all chat types.
+The device no longer loses presses, no longer fails silently, and reports its own health.
 
-### Phase 3 — Restructure
+### ⏳ Production milestone — before Phase 2
+
+Production runs the **C5 build**. Everything from `B1` onward is bench-only.
+
+1. Finish the bench soak; take the free-memory trend from `C3`.
+2. Promote the current tree to production.
+3. Let the reboot dataset accumulate — a week or two.
+
+Nothing in Phase 2 should start before this. The reboot investigation is the reason `C4`
+exists, it only produces data on the production unit, and a large refactor on top of code
+that has never run in place would confuse both.
+
+### Phase 3 — Restructure *(before most of Phase 2)*
+
 `F1` → `E2` → `F2` → `F3`
 
-**Tests before the refactor, not after.** F1 is what makes E2 safe.
+**Deliberately ahead of Phase 2.** `E2` is the highest-priority item left: `main.py` is 1720
+lines, and every Phase 2 change makes it longer. Splitting first means those changes land in
+files that make sense.
+
+**Tests before the refactor, not after.** All eight test files reach into `main.py` by AST
+extraction and break on the first move. `F1` rewrites them as plain imports, one module at a
+time.
+
+### Phase 2 — Correctness
+
+`A1` · `A2` · `A4` · `C1` · `E1` · `D2` · `D3` · `B5` · `I1` · `H1` · `C6`
+
+The device already behaves correctly *here* — this deployment uses a channel, which the
+existing parser handles. Most of this phase is **portability**: making it correct for the DM
+and group paths the README documents, for other people's boards.
+
+Suggested order within the phase:
+
+| Group | Items | Why together |
+| --- | --- | --- |
+| Update handling | `A1` · `A2` · `A4` | One rewrite of the parser and dispatch |
+| Configuration | `E1` · `D2` | Both move values out of source; `D2` decides whether `secrets.py` is renamed |
+| Time | `C1` | Unblocks real timestamps in the log and queued rings |
+| Hygiene | `D3` · `B5` · `I1` · `H1` · `C6` | Small, independent |
+
+`C1` is worth doing early in the phase: `ticks_ms` timestamps make every other diagnosis
+harder, and the queue already carries an epoch field waiting for it.
 
 ### Phase 4 — Polish and roadmap
-`B7` · `B8` · `C2` · `G1` · `G3` · `I3` · `E3` · `E5` · `A8` · `D4` · `F4` · `G4` · `G5` ·
-`H2` · `H3`
 
-Plus `J1`, once `C4` and `B2` are proven on hardware.
+`B7` · `C2` *(finish)* · `G1` · `I3` · `E3` · `E5` · `A8` · `D4` · `F4` · `G4` · `G10` ·
+`H2` · `H3` · `H5`
 
-Then, on future hardware: `E4` · `G2`.
+Then, gated on hardware or a proven baseline: `J1` (needs `C4` and `B2` proven in the
+field), `G6` (needs the reboot data to justify a board revision), `G5` · `G9` · `G2` · `E4`
+(all future hardware).
 
 ### Dependency edges worth respecting
 
 ```
-A3 ──▶ A4 ──▶ (needs I2)
-A3 ──▶ A6
-I2 ──▶ A4, B6-snapshot, I3
-B1 ──▶ E5
-C4 ──▶ B2   (reset causes must be separable before adding a new one)
-C4 ──▶ J1   (rollback needs to detect a failed boot)
-I2 ──▶ J1   (atomic swap reuses the same pattern)
-F1 ──▶ E2 ──▶ F2
-B1 ◀──▶ G3   (debounce parameters are shared)
-E2 ──▶ G5   (loop must stay swappable)
+F1 ──▶ E2 ──▶ F2          tests before the move
+E2 ──▶ G5                 the loop must stay swappable for deep sleep
+C1 ──▶ queue timestamps   restored rings cannot be aged without a clock
+C4 ──▶ J1                 rollback needs to detect a failed boot
+I2 ──▶ J1                 atomic swap reuses the same pattern
+B1 ──▶ E5                 long polling is only safe once input is decoupled
+B1 ──▶ G9                 a second input is another entry in the latch list
+D2 ──▶ E1                 whether secrets.py is renamed decides where config lands
 ```
 
 ---
