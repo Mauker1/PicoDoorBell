@@ -249,7 +249,8 @@ open('state.json', 'w').write('{"v": 1, "chatId": -5, "epochAnchor": null, "writ
 mem32.cells.clear()
 mem32[CHIP_RESET] = 1 << 8
 ns = load_firmware()
-check('v1 file migrates to v2', ns['state']['v'], 2)
+check('an older file migrates to the current version',
+      ns['state']['v'], ns['STATE_VERSION'])
 check('migration preserves chatId', ns['state']['chatId'], -5)
 check('absent boots field defaults to zero', ns['state']['boots'], 0)
 

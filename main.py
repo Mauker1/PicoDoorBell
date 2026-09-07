@@ -97,7 +97,12 @@ text = 'Doorbell activated!'
 logCommand = "/log"
 
 # In memory log
-log = ''
+# Kept as a list of lines, never as one growing string. `log += entry`
+# reallocates the whole buffer on every append; a few hundred appends during
+# an outage means a few hundred multi-kilobyte allocations and frees, which
+# fragments a 264 KB heap. TLS handshakes need large contiguous blocks, so
+# the symptom is sends beginning to fail while everything small still works.
+logLines = []
 
 # Wifi connection status
 wifiData = ''
@@ -112,7 +117,8 @@ isStartup = True
 startupTime = time.ticks_ms()
 lastLogCheck = startupTime
 logCheckInterval = 60000
-logMaxSize = 10000
+LOG_MAX_LINES = 120       # bounded by count, not characters
+LOG_CHUNK_CHARS = 3500    # under Telegram's 4096 limit, with room for markup
 
 ####################################################################################
 # B2 watchdog.
@@ -129,6 +135,46 @@ logMaxSize = 10000
 #
 # Once armed, an RP2040 watchdog cannot be disarmed.
 ####################################################################################
+
+####################################################################################
+# B4 reconnection.
+#
+# The previous loop called wlan.connect() every three seconds for as long as the
+# network was down. A ten-minute outage on the bench issued roughly 200 of them,
+# and afterwards the board associated -- status 3, IP printed -- but passed no
+# traffic at all. Re-issuing a connect while one is already in progress is a
+# known way to wedge the cyw43 stack, and a wedged stack is precisely what a
+# reset fixes.
+####################################################################################
+
+WIFI_POLL_MS = 500          # how often to check status while waiting
+# A terminal status means the attempt is over, so waiting long achieves
+# nothing -- but retrying instantly is the hammering this function exists to
+# avoid. Must stay below WIFI_PROGRESS_MAX_MS: a dead attempt should retry
+# sooner than a live one, not later.
+WIFI_REISSUE_MS = 10000
+# A healthy association plus DHCP completes in a few seconds. Twenty leaves
+# generous margin; sixty, tried first, wasted a minute per attempt on a
+# network where DHCP was stalling anyway.
+WIFI_PROGRESS_MAX_MS = 20000
+WIFI_MAX_ATTEMPTS = 30      # then reset rather than keep flailing
+
+# Statuses meaning "a join is under way, leave it alone". MicroPython exposes
+# no STAT_ constant for 2, which is associated-but-awaiting-DHCP.
+WIFI_PROGRESS_STATES = (1, 2)
+
+# The port's own names are thin and, for -3, misleading: cyw43 reports it for
+# any association rejection, including MAC filtering or an AP block, not only
+# a wrong password.
+WIFI_STATUS_NAMES = {
+    0: 'idle',
+    1: 'joining',
+    2: 'awaiting IP',
+    3: 'connected',
+    -1: 'link failed',
+    -2: 'no AP found',
+    -3: 'auth rejected',
+}
 
 WDT_TIMEOUT_MS = 8000
 
@@ -181,6 +227,32 @@ IN_REJECTED = 9    # too short to be real
 IN_MISSED = 10     # would have been lost by the old polling loop
 IN_FIELDS = 11
 
+####################################################################################
+# B6 undelivered-ring queue.
+#
+# A ring detected during a network outage used to be logged and then lost.
+# Rings now wait in RAM until they can be sent.
+#
+# RAM first: the queue exists to survive a *network* outage, which RAM covers
+# completely. Flash only helps across a reset, so it is written only when an
+# outage has already run long -- a Tier 3 write, event-driven and rare.
+####################################################################################
+
+QUEUE_MAX = 20                    # bounded: a long outage must not exhaust RAM
+QUEUE_SNAPSHOT_AFTER_MS = 300000  # only persist once an outage passes 5 minutes
+QUEUE_SNAPSHOT_MIN_MS = 300000    # and never more than once per 5 minutes
+QUEUE_FLUSH_PER_PASS = 3          # bound the work in any one loop pass
+DELAY_NOTICE_MS = 10000           # say so if a ring is delivered this late
+
+Q_TICKS = 0      # ticks_ms when it was latched; meaningless across a reset
+Q_WIDTH = 1      # pulse width, for the log
+Q_EPOCH = 2      # wall-clock seconds, or None until C1 lands
+Q_RESTORED = 3   # came back from flash, so its age is unknowable
+
+queue = []
+queueDropped = 0
+lastSnapshotTicks = 0
+
 inputs = []
 # Start of the current main-loop pass, and of the one before it. Used to work
 # out whether a ring landed in a window where polling could not have seen it.
@@ -201,10 +273,58 @@ REQUEST_TIMEOUT_S = 5
 # Flipped off the first time urequests rejects the timeout argument.
 requestsTimeoutSupported = True
 
+####################################################################################
+# Wedged-stack detection.
+#
+# Reproduced on the bench: after the AP rejected the board for a few minutes,
+# it re-associated -- wlan.status() reported connected and ifconfig printed an
+# IP -- but every DNS lookup returned -2, indefinitely. B4's attempt counter
+# does not help, because it only guards the connection phase; once status
+# reads 3 the reset path is out of reach.
+#
+# A stack that claims to be up and passes nothing is worse than one that admits
+# it is down, because nothing notices.
+#
+# The remedy escalates rather than jumping to a reset, because the firmware
+# cannot tell a wedged local stack from an upstream block. A router that filters
+# a device while leaving association and DHCP intact produces exactly the same
+# symptom -- and did, during testing, which is why the original diagnosis here
+# is uncertain. Resetting cannot fix an upstream block, so the cheap local
+# remedy comes first:
+#
+#   1. bounce the WiFi link (disconnect, reconnect)
+#   2. if failures continue after that, reset
+#
+# The bounce also preserves the RAM log, which a reset destroys.
+####################################################################################
+
+# Elapsed time without a success, not a failure count. Backoff stretches a
+# count into an unpredictable duration -- fifteen failures works out at about
+# twelve minutes, by which point the AP had already deauthenticated the board
+# on the bench and this path was unreachable.
+#
+# Five minutes, not two. An associated-but-dead link recovered on its own
+# after roughly seven minutes on the bench, with no intervention: the cause
+# was upstream, not local. Bouncing at two minutes would have discarded a
+# working association several minutes before the network returned -- and
+# reassociating on that router took 28 attempts. Nothing is lost by waiting,
+# because the queue holds the ring; acting early can make recovery slower.
+NETWORK_DEAD_MS = 300000
+NETWORK_BACKOFF_MS = 5000    # first retry delay, doubling
+NETWORK_BACKOFF_MAX_MS = 60000
+
+networkFailures = 0
+networkBackoffMs = 0
+networkRetryAt = 0
+networkBounceRequested = False
+networkBounced = False
+lastNetworkSuccess = 0
+
 REQUEST_OK = 0          # 2xx, body decoded
 REQUEST_RETRY = 1       # transient (network fault or 5xx), safe to retry
 REQUEST_RATE_LIMIT = 2  # 429, honour retry_after before retrying
 REQUEST_FATAL = 3       # other 4xx, retrying will not help
+REQUEST_SKIPPED = 4     # never attempted: backoff, or the link is down
 
 def classify_response(status):
     if status <= 0:
@@ -238,6 +358,71 @@ def retry_after(body):
     except (KeyError, TypeError, ValueError):
         return 0
 
+def note_request_result(outcome):
+    """Track whether the network is actually carrying traffic.
+
+    A run of failures while `wlan.status()` still reports a connection means
+    the stack is associated but dead. Nothing else detects that state, and
+    only a reset clears it.
+    """
+    global networkFailures, networkBackoffMs, networkRetryAt
+    global networkBounceRequested, networkBounced, lastNetworkSuccess
+    now = time.ticks_ms()
+    if outcome == REQUEST_OK:
+        if networkFailures:
+            report('Network recovered after ' + str(networkFailures) +
+                   ' failure(s)')
+        networkFailures = 0
+        networkBackoffMs = 0
+        networkBounced = False
+        lastNetworkSuccess = now
+        return
+    if outcome in (REQUEST_FATAL, REQUEST_SKIPPED):
+        # FATAL: Telegram answered, so the link is fine. SKIPPED: nothing was
+        # attempted, so it is evidence of nothing.
+        return
+    networkFailures += 1
+    if networkBackoffMs:
+        networkBackoffMs = min(networkBackoffMs * 2, NETWORK_BACKOFF_MAX_MS)
+    else:
+        networkBackoffMs = NETWORK_BACKOFF_MS
+    networkRetryAt = time.ticks_add(now, networkBackoffMs)
+    if (time.ticks_diff(now, lastNetworkSuccess) > NETWORK_DEAD_MS and
+            is_wifi_connected()):
+        if networkBounced:
+            # The link was already bounced and it did not help, so the fault
+            # is not the association. Either the stack is wedged below it, or
+            # the problem is upstream and a reset will not fix that either --
+            # but a reset is the only local action left.
+            self_reset('network dead for ' +
+                       str(time.ticks_diff(now, lastNetworkSuccess) // 1000) +
+                       's after a WiFi bounce', REASON_NETWORK)
+        else:
+            # Requested rather than done here: this runs deep inside a
+            # request, and reconnecting from there would be re-entrant.
+            networkBounceRequested = True
+
+def bounce_wifi():
+    """Drop and re-establish the link, without resetting the board.
+
+    The gentler half of the escalation. Clears an association that is up
+    but carrying nothing, and unlike a reset it keeps the log, the queued
+    rings in RAM, and the uptime.
+    """
+    global networkBounceRequested, networkBounced
+    global networkFailures, networkBackoffMs
+    networkBounceRequested = False
+    networkBounced = True
+    networkFailures = 0
+    networkBackoffMs = 0
+    report('Network unresponsive while associated; bouncing the link')
+    try:
+        wlan.disconnect()
+    except Exception as e:
+        report('WiFi disconnect failed: ' + str(e))
+    sleep_fed(2)
+    connect_wifi()
+
 def do_request(method, url, payload=None):
     """Perform an HTTP request and always release the socket.
 
@@ -249,7 +434,15 @@ def do_request(method, url, payload=None):
     # Do not open a socket the network cannot carry. Losing WiFi mid-request
     # is what hangs urequests, and the check is free.
     if not is_wifi_connected():
-        return (REQUEST_RETRY, 0, None)
+        return (REQUEST_SKIPPED, 0, None)
+
+    # Back off after failures rather than retrying every pass. Without this a
+    # long outage burns hundreds of DNS lookups an hour and floods the log.
+    if networkBackoffMs and time.ticks_diff(time.ticks_ms(), networkRetryAt) < 0:
+        # Not a failure: nothing was attempted. Logging it as one produced
+        # entries like 'getUpdates failed: status=0' for requests that never
+        # happened, and counted against the dead-network deadline twice.
+        return (REQUEST_SKIPPED, 0, None)
 
     response = None
     # A handshake can run into seconds; the watchdog must not bite mid-request.
@@ -280,10 +473,19 @@ def do_request(method, url, payload=None):
             body = response.json()
         except (ValueError, OSError):
             body = None
-        return (classify_response(status), status, body)
+        outcome = classify_response(status)
+        note_request_result(outcome)
+        return (outcome, status, body)
     except OSError as e:
-        # DNS failure, refused connection, TLS failure, timeout.
-        append_to_log('HTTP ' + method + ' failed: ' + str(e))
+        # DNS failure, refused connection, TLS failure, timeout. Printed,
+        # not just logged: when the network misbehaves this errno is the
+        # first thing anyone needs, and a full log used to swallow it.
+        note_request_result(REQUEST_RETRY)
+        # The backoff is stated because it is otherwise invisible: requests
+        # skipped while it runs print nothing at all, so a quiet log looks
+        # the same whether nothing was tried or nothing failed.
+        report('HTTP ' + method + ' failed: ' + str(e) +
+               ' (next attempt in ' + str(networkBackoffMs // 1000) + 's)')
         return (REQUEST_RETRY, 0, None)
     finally:
         if response is not None:
@@ -343,8 +545,9 @@ def sleep_fed(seconds):
 def send_message (chatId, message):
     param = {'chat_id': chatId, 'text': message}
     outcome, status, body = do_request('POST', sendURL, param)
-    if outcome != REQUEST_OK:
-        append_to_log('sendMessage failed: ' + describe_api_error(status, body))
+    if outcome not in (REQUEST_OK, REQUEST_SKIPPED) and status != 0:
+        # status 0 means do_request already reported the transport error.
+        report('sendMessage failed: ' + describe_api_error(status, body))
     return (outcome, status, body)
 
 def read_message(chatId):
@@ -356,6 +559,8 @@ def read_message(chatId):
         url = getURL + "?chat_id=" + str(chatId)
     # NOTE: never print or log `url` -- it embeds the bot token.
     outcome, status, body = do_request('GET', url)
+    if outcome == REQUEST_SKIPPED:
+        return
     if outcome != REQUEST_OK:
         append_to_log('getUpdates failed: ' + describe_api_error(status, body))
         return
@@ -378,22 +583,57 @@ def report(message):
     append_to_log(message)
 
 def append_to_log(message):
-    global log
-    if (len(log) <= logMaxSize):
-        log += str(time.ticks_ms()) + ' ' + message + '\n'
-    else:
-        print('Log is full. Not appending message.')
+    """Append, dropping the oldest lines once full.
+
+    Previously this refused new entries at the limit, which preserved the
+    *least* recent events and printed a full-log notice on every call. A
+    long outage therefore filled the log with the start of the outage,
+    discarded the errors that explained it, and buried the console in
+    notices. Exactly backwards for diagnosis.
+    """
+    logLines.append(str(time.ticks_ms()) + ' ' + message)
+    while len(logLines) > LOG_MAX_LINES:
+        # Drop the oldest. Refusing new entries instead, as this once did,
+        # preserves the least recent events -- backwards for diagnosis.
+        logLines.pop(0)
+
+def log_text():
+    return '\n'.join(logLines)
 
 def print_log(chatId):
-    global log
-    print(log)
-    send_message(chatId, log)
-    if (len(log) > logMaxSize):
-        reset_log()
+    """Send the log, in pieces, and clear it only once it has all landed.
+
+    Telegram caps a message at 4096 characters. The log was allowed to
+    reach 10000, so a full log was an unconditional 400 -- and the old code
+    then cleared it anyway, destroying the thing that had just failed to
+    send. Observed: /log worked early on and stopped once the log filled.
+    """
+    if not logLines:
+        send_message(chatId, 'Log is empty.')
+        return True
+    pending = log_text()
+    while pending:
+        chunk = pending[:LOG_CHUNK_CHARS]
+        if len(pending) > LOG_CHUNK_CHARS:
+            edge = chunk.rfind('\n')
+            if edge > 0:
+                chunk = chunk[:edge]
+        outcome, status, body = send_message(chatId, chunk)
+        if outcome != REQUEST_OK:
+            # Keep everything. A log that failed to send is exactly the log
+            # someone needs.
+            report('Log send failed; keeping it')
+            return False
+        pending = pending[len(chunk):]
+        if pending[:1] == '\n':
+            pending = pending[1:]
+    reset_log()
+    return True
 
 def reset_log():
-    global log, wifiData
-    log = str(time.ticks_ms()) + ' ' + wifiData + '\n'
+    global wifiData
+    del logLines[:]
+    logLines.append(str(time.ticks_ms()) + ' ' + wifiData)
 
 ####################################################################################
 # Tier 2 persistence.
@@ -412,7 +652,7 @@ def reset_log():
 
 STATE_PATH = 'state.json'
 STATE_TMP = 'state.json.tmp'
-STATE_VERSION = 2
+STATE_VERSION = 3
 
 # Set False when the on-disk file was written by newer firmware, so a
 # downgraded build runs on defaults instead of clobbering it.
@@ -427,6 +667,7 @@ def default_state():
         'epochAnchor': None,   # C1: NTP epoch captured at last sync
         'writes': 0,           # I3: wear counter, reported in the heartbeat
         'boots': 0,            # C5: stable boots; survives hardware resets
+        'queue': [],           # B6: rings not yet delivered (Tier 3)
     }
 
 def state_is_future(data):
@@ -443,14 +684,14 @@ def migrate_state(data):
     if not isinstance(data, dict):
         return None
     version = data.get('v', 0)
-    # Migrations chain here, oldest first. v1 -> v2 added 'boots' and needs
-    # no body: the merge below fills absent keys from defaults, so an older
-    # file simply starts counting from zero. The version bump still matters,
-    # so a downgraded build recognises the file as newer and leaves it alone.
+    # Migrations chain here, oldest first. v1 -> v2 added 'boots' and
+    # v2 -> v3 added 'queue'; neither needs a body, because the merge below
+    # fills absent keys from defaults. The version bumps still matter, so a
+    # downgraded build recognises the file as newer and leaves it alone.
     # Later migrations that do need a body go here:
-    #   if version < 3:
+    #   if version < 4:
     #       data['newField'] = derive_from(data)
-    #       version = 3
+    #       version = 4
     merged = default_state()
     for key in merged:
         if key in data:
@@ -562,6 +803,23 @@ WATCHDOG_SCRATCH0 = WATCHDOG_BASE + 0x0c   # SCRATCH0..7, four bytes each
 # Scratch 4-7 carry the bootrom's reboot-to-BOOTSEL handshake, so stay in
 # 0-3. Using the top of that range leaves 0 and 1 alone in case the port
 # wants them.
+# Set immediately before a reset this firmware chose to perform, so the next
+# boot can tell its own doing from a watchdog bite. Both look identical
+# otherwise: warm, with no CHIP_RESET flags.
+# UNVERIFIED: scratch 0 and 1 are believed unused by the port, but only
+# 4-7 are documented as taken by the bootrom.
+SCRATCH_REASON_IDX = 0        # why self_reset() fired, for the next boot
+REASON_NAMES = {
+    0: '',
+    1: 'WiFi unreachable',
+    2: 'network dead after a bounce',
+}
+REASON_WIFI = 1
+REASON_NETWORK = 2
+
+SCRATCH_INTENT_IDX = 1
+SCRATCH_INTENT = 0x50444252   # 'PDBR'
+
 SCRATCH_MAGIC_IDX = 2
 # Counts boots since the last one that proved stable. Not a total: any
 # hardware reset clears the scratch area, so a running total has to live in
@@ -636,6 +894,8 @@ def read_reset_info():
         'wdtReason': None,
         'unstableBoots': 0,
         'bootNumber': None,
+        'selfReset': False,
+        'resetReason': '',
         'warmBoot': False,
     }
     try:
@@ -652,6 +912,15 @@ def read_reset_info():
         pass
     try:
         info['wdtReason'] = machine.mem32[WATCHDOG_REASON]
+    except Exception:
+        pass
+    try:
+        if scratch_read(SCRATCH_INTENT_IDX) == SCRATCH_INTENT:
+            info['selfReset'] = True
+            info['resetReason'] = REASON_NAMES.get(
+                scratch_read(SCRATCH_REASON_IDX), '')
+            scratch_write(SCRATCH_INTENT_IDX, 0)
+            scratch_write(SCRATCH_REASON_IDX, 0)
     except Exception:
         pass
     try:
@@ -690,6 +959,10 @@ def reset_verdict(info):
     """
     if info is None:
         return 'unknown'
+    if info['selfReset']:
+        # We asked for this one. Without the marker it would be
+        # indistinguishable from a watchdog bite.
+        return 'self-reset'
     if info['warmBoot']:
         # Scratch survived, so nothing reset the chip. Soft reboot, or a
         # watchdog bite once B2 exists. CHIP_RESET here is stale.
@@ -717,6 +990,8 @@ def format_reset_info(info):
         parts.append(label + '=' + '+'.join(info['flags']))
     if info['chipReset'] is not None:
         parts.append('raw=0x%08x' % info['chipReset'])
+    if info['resetReason']:
+        parts.append('reason=' + info['resetReason'].replace(' ', '_'))
     parts.append('warm' if info['warmBoot'] else 'cold')
     # Advisory only. Kept because it is free and occasionally corroborates.
     advisory = 'cause=' + str(info['cause'])
@@ -745,16 +1020,50 @@ def is_wifi_connected():
     else:
         return True
 
+def wifi_status_name(code):
+    return WIFI_STATUS_NAMES.get(code, 'status ' + str(code))
+
+def self_reset(reason, code=0):
+    """Reset deliberately, leaving a marker so the next boot knows.
+
+    The RAM log does not survive, so a short code goes into scratch 0. It
+    is the one fact worth carrying across: without it, a reset loop caused
+    by an AP that keeps rejecting the board looks like any other
+    self-reset, and the explanation is destroyed every few minutes by the
+    very reset it caused.
+    """
+    report('Resetting: ' + reason)
+    try:
+        scratch_write(SCRATCH_REASON_IDX, code)
+    except Exception:
+        pass
+    try:
+        snapshot_queue()          # do not lose undelivered rings
+    except Exception:
+        pass
+    try:
+        scratch_write(SCRATCH_INTENT_IDX, SCRATCH_INTENT)
+    except Exception:
+        pass
+    time.sleep(1)                 # let the console drain
+    machine.reset()
+
 def connect_wifi():
     """Bring the WiFi link up. Connection only -- no notifications.
 
     Callers decide whether to announce; mixing the two made a transport
     failure look like a connection failure.
 
-    NOTE: still loops until connected. B4 adds the timeout, backoff and
-    status interpretation.
+    One connect() is issued and then given WIFI_REISSUE_MS to work before
+    another is tried. The previous code re-issued every three seconds,
+    which left the stack associated but unable to pass traffic after a long
+    outage. After WIFI_MAX_ATTEMPTS the board resets, because at that point
+    a wedged driver is the likeliest remaining explanation and a reset is
+    the only thing that clears it.
     """
-    global wifiData
+    global wifiData, lastNetworkSuccess
+    attempts = 0
+    issuedAt = None
     while True:
         if (is_wifi_connected()):
             blink_onboard_led(3)
@@ -763,14 +1072,42 @@ def connect_wifi():
             print('ip = ' + status[0])
             wifiData = 'WiFi connected. IP: ' + status[0]
             append_to_log(wifiData)
+            # A fresh link deserves a fresh grace period; otherwise the first
+            # failure after a long outage looks like a dead network.
+            lastNetworkSuccess = time.ticks_ms()
             return True
+
+        now = time.ticks_ms()
+        status = wlan.status()
+        if issuedAt is None:
+            reissue = True
+        elif status in WIFI_PROGRESS_STATES:
+            # A join is under way. Calling connect() again aborts it and
+            # starts over -- observed as seven attempts over three and a
+            # half minutes on a network that was perfectly available.
+            reissue = time.ticks_diff(now, issuedAt) > WIFI_PROGRESS_MAX_MS
         else:
-            message = 'WiFi is disconnected. Trying to connect.'
-            append_to_log(message)
-            print(message)
+            reissue = time.ticks_diff(now, issuedAt) > WIFI_REISSUE_MS
+
+        if reissue:
+            attempts += 1
+            if attempts > WIFI_MAX_ATTEMPTS:
+                self_reset('WiFi unreachable after ' + str(attempts - 1) +
+                           ' attempts', REASON_WIFI)
             led.off()
-            wlan.connect(ssid, pw)
-            sleep_fed(3)
+            report('WiFi down (' + wifi_status_name(status) +
+                   '), attempt ' + str(attempts))
+            try:
+                wlan.connect(ssid, pw)
+            except OSError as e:
+                report('WiFi connect failed: ' + str(e))
+            issuedAt = now
+
+        sleep_fed(WIFI_POLL_MS / 1000.0)
+        # The loop is blocked here for as long as the outage lasts, so the
+        # queue would otherwise never reach flash during the one situation
+        # it exists for.
+        maybe_snapshot_queue()
 
 def announce_startup():
     """Tell the chat we are up. Best effort -- never fatal.
@@ -900,7 +1237,101 @@ def process_input(entry):
     entry[IN_RINGS] += 1
     entry[IN_LAST_ALERT] = now
     report(entry[IN_NAME] + ' ring, ' + str(width) + 'ms')
-    send_message(chatId, text)
+    # Queued rather than sent. Delivery is the queue's job, and a ring is
+    # not discarded until Telegram confirms it.
+    enqueue_ring(width)
+
+def current_epoch():
+    """Wall-clock seconds, or None until C1 syncs the clock.
+
+    Until then a queued ring has no knowable absolute time, and one
+    restored from flash cannot even be aged -- ticks_ms restarts at zero.
+    The field exists now so C1 needs no schema change.
+    """
+    return state_get('epochAnchor', None)
+
+def enqueue_ring(width):
+    global queueDropped
+    if len(queue) >= QUEUE_MAX:
+        # Drop the oldest: a visitor from an hour ago matters less than the
+        # one at the door now.
+        queue.pop(0)
+        queueDropped += 1
+        append_to_log('Queue full, dropped the oldest ring')
+    queue.append([time.ticks_ms(), width, current_epoch(), False])
+
+def describe_delay(entry):
+    if entry[Q_RESTORED]:
+        return ' (queued before a restart)'
+    age = time.ticks_diff(time.ticks_ms(), entry[Q_TICKS])
+    if age < DELAY_NOTICE_MS:
+        return ''
+    return ' (delayed ' + str(age // 1000) + 's)'
+
+def flush_queue():
+    """Deliver what is waiting. Stops at the first retryable failure.
+
+    Nothing leaves the queue until Telegram has confirmed it. The previous
+    code sent and forgot, so a failed send lost the ring silently -- seen
+    on the bench as a logged ring that never arrived.
+    """
+    sentCount = 0
+    while queue and sentCount < QUEUE_FLUSH_PER_PASS:
+        entry = queue[0]
+        outcome, status, body = send_message(chatId, text + describe_delay(entry))
+        if outcome == REQUEST_OK:
+            queue.pop(0)
+            sentCount += 1
+        elif outcome == REQUEST_FATAL:
+            # Retrying will not help. Drop it rather than block the queue
+            # behind something permanently undeliverable.
+            queue.pop(0)
+            report('Dropped an undeliverable ring: ' +
+                   describe_api_error(status, body))
+        else:
+            # Transient or rate limited. Leave it and try again next pass.
+            break
+    return sentCount
+
+def snapshot_queue():
+    """Persist the queue. Writes only if the contents actually changed."""
+    global lastSnapshotTicks
+    lastSnapshotTicks = time.ticks_ms()
+    state_set('queue', [[e[Q_EPOCH], e[Q_WIDTH]] for e in queue])
+
+def maybe_snapshot_queue():
+    """Persist a queue that has been waiting long enough to be at risk.
+
+    Not on a timer. A short outage never writes at all, because RAM already
+    covers it. Only an outage that has already run for minutes -- long
+    enough that a reset in the middle is a real possibility -- earns a
+    flash write.
+    """
+    now = time.ticks_ms()
+    if not queue:
+        if state_get('queue', []):
+            snapshot_queue()      # delivered; clear the copy on flash
+        return
+    if time.ticks_diff(now, queue[0][Q_TICKS]) < QUEUE_SNAPSHOT_AFTER_MS:
+        return
+    if time.ticks_diff(now, lastSnapshotTicks) < QUEUE_SNAPSHOT_MIN_MS:
+        return
+    snapshot_queue()
+
+def restore_queue():
+    """Reload rings that outlived a reset."""
+    stored = state_get('queue', [])
+    if not stored:
+        return
+    now = time.ticks_ms()
+    for item in stored:
+        try:
+            epoch = item[0]
+            width = item[1]
+        except (IndexError, TypeError):
+            continue
+        queue.append([now, width, epoch, True])
+    report('Recovered ' + str(len(queue)) + ' undelivered ring(s)')
 
 def poll_inputs():
     for entry in inputs:
@@ -915,6 +1346,8 @@ def input_summary():
                      ' rings, ' + str(entry[IN_REJECTED]) +
                      ' transients, ' + str(entry[IN_MISSED]) +
                      ' unpollable')
+    parts.append('queue: ' + str(len(queue)) + ' waiting, ' +
+                 str(queueDropped) + ' dropped')
     return '; '.join(parts)
 
 def setup_hardware():
@@ -1020,6 +1453,8 @@ def boot():
     # The running total lives in flash, so it is only knowable once state
     # has loaded -- which is why the summary is logged here rather than at
     # the top of boot(). Nothing is written yet; see mark_boot_stable().
+    restore_queue()
+
     bootNumber = state_get('boots', 0) + 1
     resetInfo['bootNumber'] = bootNumber
     bootStableAt = time.ticks_add(time.ticks_ms(), BOOT_STABLE_MS)
@@ -1047,7 +1482,12 @@ while True:
             connect_wifi()
             announce_startup()
         
+        if networkBounceRequested:
+            bounce_wifi()
+
         poll_inputs()
+        flush_queue()
+        maybe_snapshot_queue()
         
         # Check for new messages
         if (time.ticks_diff(time.ticks_ms(), lastLogCheck) > logCheckInterval):
@@ -1081,7 +1521,6 @@ while True:
         led.off()
         wlan.disconnect()
         append_to_log('WiFi disconnected: ' + str(e))
-        print(log)
         # Grace period, in fed slices. Left as a single sleep(10) this
         # would outlast the watchdog and reset the board on every error.
         sleep_fed(10)

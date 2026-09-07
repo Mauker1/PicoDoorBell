@@ -97,7 +97,11 @@ Known cosmetic issue, not a fault: the "first time" wording above the boot count
 assumed a group. It is a channel, so `channel_post` parsing is correct and the warning does
 not apply.)*
 
-**Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · ✅ C5 · 🔬 B1 · 🔬 B2 · — B6 · — C3
+**Phase 1 progress:** ✅ D1 · ✅ A5 · ✅ A3 · ✅ I2 · ✅ B3 · ✅ C4 · ✅ C5 · ✅ A9 · 🔬 B1 · 🔬 B2 · 🔬 B6 · 🔬 B4 · — C3
+
+> **B4 was pulled forward from Phase 2.** A ten-minute bench outage left the board associated
+> but unable to pass traffic, losing two rings. Root cause: `wlan.connect()` re-issued every
+> three seconds, ~200 times, wedging the cyw43 stack.
 
 Everything marked ✅ has host-side test coverage but has **not yet run on real
 hardware**. See [Open questions](#open-questions) for what that gates.
@@ -173,7 +177,7 @@ guard — any exception during parsing leaks the socket. This is the classic Mic
 `urequests` slow death: works for days, then `ENOMEM`. The existing `MemoryError` recovery
 path (disconnect WiFi, sleep 10 s) frees nothing.
 
-### A6 — Log lifecycle correctness — **P1**
+### ✅ A6 — Log lifecycle correctness — **P1, awaiting hardware test**
 Three defects, one fix:
 
 1. Clear the log after a **confirmed successful send**, not only on overflow. Today
@@ -289,7 +293,7 @@ created**. With no watchdog, the device is dead until someone power-cycles it.
 Also: remove the message-sending side effect from inside `connect_wifi()`. Connection and
 notification are separate concerns.
 
-### B4 — Bounded WiFi reconnection with backoff — **P1**
+### ✅ B4 — Bounded WiFi reconnection with backoff — **P1, awaiting hardware test**
 > **Mark the reset as intentional.** The `machine.reset()` after N failed cycles would
 > otherwise be indistinguishable from a watchdog bite — both read as `warm-reset`. Set a
 > marker in a spare scratch register before resetting, and clear it once read, so
@@ -336,7 +340,7 @@ Inconclusive: no "urequests has no timeout support" line appeared. Either the bu
 the parameter, or the pre-flight check caught every case before the timeout path was reached.
 The guard that fired is the one that mattered.
 
-### B6 — Offline event queue — **P0**
+### ✅ B6 — Offline event queue — **P0, awaiting hardware test**
 > **Demonstrated cleanly.** With A9 in place, dropping WiFi just after a press produces:
 > `Doorbell ring, 202ms` followed by `WiFi is disconnected.` — the ring detected, measured,
 > counted and logged, then lost. No crash, no error, no trace beyond that line. This is now
@@ -393,7 +397,10 @@ entries as such.
 
 `ticks_ms` wraps at ~12.4 days, and `3847221` is useless in an incident report.
 
-### C2 — Structured, bounded logging — **P2**
+### 🔬 C2 — Structured, bounded logging — **P2, partially done**
+> Bounding and the ring behaviour landed early: the log is now a bounded list of lines rather
+> than a growing string. Levels and memory instrumentation are still outstanding.
+
 Levels (DEBUG / INFO / WARN / ERROR). Ring buffer that drops oldest rather than refusing new
 entries — the current `append_to_log` stops accepting anything once full, so the log
 preserves the *least* recent events. Include `gc.mem_free()` and uptime on every entry so a

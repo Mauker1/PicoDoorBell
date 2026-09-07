@@ -71,6 +71,7 @@ class Pin:
 class WLAN:
     connected = True
     fail_connect = False
+    connect_after = None     # succeed after this many connect() calls
 
     def __init__(self, iface=None):
         pass
@@ -78,11 +79,18 @@ class WLAN:
     def active(self, on):
         events.append('wlan_active')
 
+    status_code = 0          # what to report while not connected
+
     def status(self):
-        return 3 if WLAN.connected else 0
+        return 3 if WLAN.connected else WLAN.status_code
 
     def connect(self, ssid, pw):
         events.append('wlan_connect')
+        if WLAN.connect_after is not None:
+            WLAN.connect_after -= 1
+            if WLAN.connect_after <= 0:
+                WLAN.connected = True
+                WLAN.connect_after = None
 
     def ifconfig(self):
         return ('192.0.2.10', '255.255.255.0', '192.0.2.1', '192.0.2.1')
@@ -166,6 +174,15 @@ class Requests:
 machine_reset_cause = [1]   # PWRON_RESET by default
 
 
+class ResetCalled(Exception):
+    """machine.reset() does not return on hardware; neither does the stub."""
+
+
+def _fake_reset():
+    events.append('machine_reset')
+    raise ResetCalled()
+
+
 clock = [0]
 
 
@@ -183,8 +200,13 @@ def _ticks_add(a, b):
 
 def install_stubs():
     sys.modules['rp2'] = _Mod(country=lambda c: events.append('country'))
-    sys.modules['network'] = _Mod(WLAN=WLAN, STA_IF='STA_IF')
+    sys.modules['network'] = _Mod(WLAN=WLAN, STA_IF='STA_IF',
+                                  STAT_IDLE=0, STAT_CONNECTING=1,
+                                  STAT_WRONG_PASSWORD=-3,
+                                  STAT_NO_AP_FOUND=-2,
+                                  STAT_CONNECT_FAIL=-1, STAT_GOT_IP=3)
     sys.modules['machine'] = _Mod(Pin=Pin, mem32=mem32, WDT=WDT,
+                                  reset=_fake_reset,
                                   reset_cause=lambda: machine_reset_cause[0],
                                   PWRON_RESET=1, HARD_RESET=2, WDT_RESET=3,
                                   DEEPSLEEP_RESET=4, SOFT_RESET=5)

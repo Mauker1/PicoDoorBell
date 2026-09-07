@@ -74,6 +74,7 @@ def pass_loop(ns, at):
     ns['prevPassTicks'] = ns['lastPassTicks']
     ns['lastPassTicks'] = at
     ns['poll_inputs']()
+    ns['flush_queue']()
 
 
 os.chdir(tempfile.mkdtemp())

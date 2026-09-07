@@ -111,7 +111,7 @@ all, and getting it wrong destroys hardware.
 | **0** | RAM | nothing | free | Rolling log, alert counters, live event queue |
 | **1** | Watchdog scratch registers | soft reset and watchdog only — **any** hardware reset clears them, RUN included | free | Magic word, unstable-boot count |
 | **2** | Flash — `state.json` | everything | one 4 KB sector erase | `chatId`, `epochAnchor`, `writes` |
-| **3** | Flash — `state.json` | everything | one 4 KB sector erase | Queue snapshot, written only on rare triggers |
+| **3** | Flash — `state.json` | everything | one 4 KB sector erase | Undelivered rings, written only after an outage passes five minutes |
 
 ### The rule
 
@@ -586,6 +586,36 @@ would turn an injected transient into a phantom notification.
 > logged width. Until then 150 ms stands: above any plausible transient, below
 > any plausible ring, and erring toward delivering.
 
+### The log is a list of lines, not a growing string
+
+`log += entry` reallocates the whole buffer on every append. A few hundred
+appends during an outage means a few hundred multi-kilobyte allocations and
+frees on a 264 KB heap, and TLS handshakes need large contiguous blocks — so the
+symptom is **sends beginning to fail while everything small still works**.
+
+That is what a ten-minute bench outage produced: hundreds of appends, then every
+send failing, correlated with the log filling. `logLines` is bounded by count and
+appends a short string each time; nothing large is reallocated.
+
+> This is the leading explanation for that failure, not a proven one. The
+> alternative — a cyw43 stack wedged by repeated `connect()` calls — is addressed
+> separately under *Reconnection*. Both fixes are worth having; the next
+> occurrence will show which mattered, because the errno is now printed.
+
+It also drops the oldest line once full, where it used to refuse new entries and
+print a notice on every call. That preserved the *least* recent events and buried
+the console, which is backwards for diagnosis and cost a session.
+
+### `/log` is chunked
+
+Telegram caps a message at 4096 characters. The log was allowed to reach 10000,
+so a full log was an unconditional 400 — and the old code then cleared it anyway,
+destroying exactly what had just failed to send.
+
+`print_log()` now splits on line boundaries under the limit, sends each piece,
+and clears only once every piece has landed. Observed on the bench: `/log` worked
+early on and stopped once the log filled.
+
 ### Saying things out loud
 
 `report()` prints and logs. Several events that only matter while someone is
@@ -604,6 +634,210 @@ estimate with a measurement.
 
 `inputs` is a list of records and G9 would add an entry, not a rewrite — but only
 the doorbell is wired today.
+
+---
+
+## Undelivered rings
+
+A ring detected during a network outage used to be logged and then lost. Observed
+on the bench: `Doorbell ring, 202ms`, then `WiFi is disconnected.`, and no message
+ever arrived — detected, measured, counted, and gone, with no crash and no error.
+
+Rings now wait in a queue until Telegram confirms delivery.
+
+### Nothing leaves the queue unconfirmed
+
+`process_input()` used to send and forget. It now enqueues, and `flush_queue()`
+removes an entry only on `REQUEST_OK`. A retryable failure leaves it in place; a
+`REQUEST_FATAL` drops it, because retrying will not help and one undeliverable
+ring must not block every ring behind it.
+
+### RAM first
+
+The queue exists to survive a *network* outage, which RAM covers completely.
+Flash only helps across a reset, so it is written **only once an outage has
+already run for five minutes** — long enough that a reset in the middle is a real
+possibility. A brief outage never writes at all.
+
+| Constant | Value | Purpose |
+| --- | --- | --- |
+| `QUEUE_MAX` | 20 | A long outage must not exhaust RAM |
+| `QUEUE_SNAPSHOT_AFTER_MS` | 300000 | Only persist an outage this old |
+| `QUEUE_SNAPSHOT_MIN_MS` | 300000 | And never more often than this |
+| `QUEUE_FLUSH_PER_PASS` | 3 | Bound the work in one loop pass |
+
+`state_set()` compares before writing, so a snapshot whose contents have not
+changed costs nothing.
+
+### Overflow drops the oldest
+
+At `QUEUE_MAX` the oldest entry goes. A visitor from an hour ago matters less than
+the one at the door now, and the count is reported so the loss is visible.
+
+### A restored ring cannot be aged
+
+`ticks_ms` restarts at zero on reset, so a ring recovered from flash has no
+knowable age. It is delivered marked `(queued before a restart)` rather than with
+a fabricated time. A ring delayed *without* a reset does carry its real delay:
+`(delayed 90s)`.
+
+The `Q_EPOCH` field is already in the record and already persisted, holding
+`None` until C1 syncs a wall clock. Once it does, restored rings can carry a real
+timestamp with no schema change.
+
+---
+
+## Reconnection
+
+One `connect()` is issued, then given 30 seconds to work before another is tried.
+After 20 attempts — roughly ten minutes — the board resets itself.
+
+### Never interrupt a join in progress
+
+`wlan.status()` distinguishes a stalled attempt from one that is working:
+
+| Code | Meaning | Re-issue? |
+| --- | --- | --- |
+| `1`, `2` | Joining, or associated and awaiting DHCP | **No** — wait up to 20 s |
+| `0`, `-1`, `-2`, `-3` | Idle, link failed, no AP, auth rejected | Yes, after 10 s |
+| `3` | Connected | Done |
+
+Observed on the bench: **seven attempts over three and a half minutes on a
+network that was perfectly available.** Every re-issue aborted a DHCP exchange
+that was already under way and started it again. A slower version of the same
+mistake as the three-second loop below.
+
+The two intervals must stay ordered: a **dead** attempt should retry sooner than
+a **live** one. Setting the allowance to 20 s while stalled retries waited 30 s
+inverted that, and a test caught it.
+
+> **Twenty seconds, not sixty.** The first attempt at this used a 60 s
+> allowance. On a bench network where DHCP was stalling, that meant a full
+> minute of dead time per attempt for no benefit: association plus DHCP
+> completes in a few seconds when it is going to complete at all.
+
+MicroPython exposes no `STAT_` constant for 2, and names `-3`
+`STAT_WRONG_PASSWORD` even though cyw43 reports it for any association
+rejection — MAC filtering or an AP block included. Both were misleading in the
+logs, so the firmware carries its own names.
+
+### Why not just retry
+
+The previous loop called `wlan.connect()` every three seconds for as long as the
+network was down. A ten-minute bench outage issued around 200 of them, and
+afterwards the board **associated but passed no traffic**: `wlan.status()`
+returned 3, the IP printed, and every send failed. Re-issuing a connect while one
+is already in flight is a known way to wedge the cyw43 stack.
+
+A wedged stack is also why the attempt count ends in a reset rather than more
+retrying. Resetting cannot fix an absent router — but by that point an absent
+router is no longer the likeliest explanation, and a reset is the only thing that
+clears a wedged driver.
+
+### Associated but dead
+
+`wlan.status()` reporting a connection is not evidence that traffic flows.
+Reproduced on the bench: after the AP rejected the board for a few minutes, it
+re-associated — status 3, IP printed — and every DNS lookup then returned `-2`,
+indefinitely. The same signature had appeared once before after a ten-minute
+outage.
+
+B4's attempt counter does not help. It only guards the connection phase, and
+once status reads 3 the reset path is out of reach. **A stack that claims to be
+up and passes nothing is worse than one that admits it is down, because nothing
+notices.**
+
+`note_request_result()` counts consecutive transport failures. A `REQUEST_FATAL`
+does not count — Telegram answered, so the link is fine. Failures also back off,
+doubling from 5 s to a 60 s cap; without it a long outage burns hundreds of DNS
+lookups an hour and floods the log.
+
+The backoff is shared across every request, since they all go to the same host.
+A queued ring failing on each loop pass therefore keeps re-arming it, and the
+once-a-minute `getUpdates` is usually skipped before it opens a socket. The
+failure line states the delay, so a quiet console is not mistaken for a quiet
+network.
+
+A skipped request returns `REQUEST_SKIPPED`, not `REQUEST_RETRY`. It was
+previously indistinguishable from a transport failure, which produced log entries
+like `getUpdates failed: status=0` for requests that never happened, and let a
+single outage count twice toward the dead-network deadline. **A request that was
+never attempted is evidence of nothing.**
+
+### The remedy escalates
+
+| Time since the last successful request, while associated | Action |
+| --- | --- |
+| `NETWORK_DEAD_MS` (2 min) | **Bounce the link** — `disconnect()`, then reconnect |
+| Another `NETWORK_DEAD_MS` after that | **Reset** |
+
+> **Five minutes, and deliberately generous.** An associated-but-dead link
+> recovered on its own after about seven minutes on the bench, with no
+> intervention — a wedged driver does not do that, so the cause was upstream.
+> Bouncing at two minutes would have discarded a working association several
+> minutes before the network returned, and reassociating on that router took 28
+> attempts. Nothing is lost by waiting, because the queue holds the ring, while
+> acting early can make recovery slower.
+
+> **Elapsed time, not a failure count.** The first version counted fifteen
+> consecutive failures. Backoff stretches a count into an unpredictable
+> duration — fifteen worked out at roughly twelve minutes, and on the bench the
+> AP deauthenticated the board long before that, which made
+> `is_wifi_connected()` false and left the whole detection path unreachable. A
+> deadline says what was meant.
+
+The bounce comes first because the firmware **cannot tell a wedged local stack
+from an upstream block**. A router that filters a device while leaving
+association and DHCP intact produces an identical symptom — and that is exactly
+what happened during testing, which is why the wedged-stack reading here is
+uncertain. Resetting cannot fix an upstream block; repeating it every few minutes
+through an ISP outage would be pure churn, and each reset destroys the RAM log.
+
+A bounce keeps the log, the queued rings and the uptime. Only if it fails to help
+is a reset the remaining local action.
+
+The bounce is *requested* from `note_request_result()` and performed by the main
+loop, because that function runs deep inside a request and reconnecting from
+there would be re-entrant.
+
+> **Three explanations, and two falsified.** Heap fragmentation from the growing
+> log string was first: it predicted the failure would stop once the log became a
+> list, and it did not. A wedged cyw43 stack was second: it predicted the state
+> would persist until something cleared it, and instead the link recovered on its
+> own after roughly seven minutes. What remains is an upstream block — the router
+> holding a device restriction for some time after it is lifted.
+>
+> The escalation stays, because a genuinely wedged stack is still possible and the
+> bounce is cheap. But the thresholds are set on the assumption that patience is
+> usually the right answer.
+
+### The reset reason outlives the reset
+
+The RAM log does not survive a reset, which is worst exactly when resets repeat:
+an AP that keeps rejecting the board produces a reset every few minutes, and each
+one destroys the log explaining why.
+
+`self_reset()` therefore writes a short code to scratch 0, and the next boot
+reports it — `reason=WiFi_unreachable` or `reason=network_dead_after_a_bounce` in
+the summary. One fact, carried across, at no cost in flash.
+
+### Self-inflicted resets are marked
+
+`self_reset()` writes a marker to scratch 1 before resetting, so the next boot
+reports `verdict=self-reset` rather than `warm-reset`. Without it, the firmware's
+own reset would be indistinguishable from a watchdog bite — both are warm with no
+`CHIP_RESET` flags — and would pollute the reboot dataset.
+
+It also snapshots the queue first, so undelivered rings survive.
+
+> **Unverified:** scratch 0 and 1 are believed unused by the port. Only 4–7 are
+> documented as taken by the bootrom.
+
+### The queue is persisted during an outage
+
+`connect_wifi()` blocks the main loop for the whole outage, so
+`maybe_snapshot_queue()` is called from inside its wait. Otherwise the queue
+would never reach flash during the one situation it exists for.
 
 ---
 
@@ -690,6 +924,7 @@ outcome, status, body = do_request(method, url, payload=None)
 | `REQUEST_RETRY` | Network fault, 5xx, or no response at all | retry with backoff |
 | `REQUEST_RATE_LIMIT` | 429 | wait `retry_after(body)` seconds, then retry |
 | `REQUEST_FATAL` | Other 4xx | log and give up; retrying will not help |
+| `REQUEST_SKIPPED` | Never attempted — backoff, or the link is down | wait; this is evidence of nothing |
 
 ### A dropped network must not become a reset
 
