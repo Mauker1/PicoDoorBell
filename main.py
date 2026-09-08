@@ -39,6 +39,13 @@ try:
     import uos as os
 except ImportError:
     import os
+# C1: NTP wall clock. ntptime ships with the rp2 port but not with host-side
+# CPython, and a build could in principle lack it. Absence is not fatal: the
+# clock simply never syncs and every timestamp stays marked as relative.
+try:
+    import ntptime
+except ImportError:
+    ntptime = None
 from secrets import secrets
 
 ####################################################################################
@@ -79,6 +86,18 @@ doorBellPin = board.doorBellPin
 # The future battery build (G5) is the one case that wants it on: there the
 # tradeoff inverts and a few dropped packets are cheaper than the current draw.
 wifiPowerSave = getattr(board, 'wifiPowerSave', False)
+
+# C1: seconds to add to UTC for displayed timestamps. NTP is UTC, but an
+# incident report is read in local time, so the offset is applied at
+# formatting only: the stored anchor stays UTC, which keeps arithmetic and
+# any future timezone change trivial. Optional and defaulted like
+# wifiPowerSave, so a board.py without it keeps working (and shows UTC).
+# Berlin is +3600 (CET) or +7200 (CEST); a fixed number here does not follow
+# daylight saving, which is a deliberate limit recorded in the roadmap, not
+# an oversight. A whole-clock error is obvious; a one-hour DST skew is the
+# kind of quiet wrongness worth avoiding, so the display is tagged with the
+# offset it used.
+utcOffset = getattr(board, 'utcOffset', 0)
 
 # Newer builds name this; older ones only take the magic number.
 WIFI_PM_NONE = getattr(network.WLAN, 'PM_NONE', 0xa11140)
@@ -157,6 +176,61 @@ lastLogCheck = startupTime
 logCheckInterval = 60000
 LOG_MAX_LINES = 120       # bounded by count, not characters
 LOG_CHUNK_CHARS = 3500    # under Telegram's 4096 limit, with room for markup
+
+####################################################################################
+# C1 wall clock.
+#
+# ticks_ms answers "how long since boot", never "what time is it", and it
+# wraps at ~12.4 days. A log line reading 3847221 tells an incident report
+# nothing. NTP gives real time, but polling it per event would be absurd, so
+# one sync captures an anchor: the epoch at a known ticks_ms, from which any
+# later wall-clock time is anchor + elapsed. ticks_diff makes the elapsed part
+# wrap-safe, so the derived clock outlives the ticks_ms wrap the raw counter
+# cannot.
+#
+# The anchor lives in RAM and is authoritative for "is the clock live". The
+# copy in state.json (epochAnchor) is a fallback for aging rings recovered
+# after a reset, and is coarse by nature: the device may have been unpowered
+# for hours between the anchor being written and the next boot reading it, so
+# a restored ring's time is always tagged as approximate. This matches the
+# existing honesty about restored rings not being ageable.
+#
+# NTP sync is never fatal, exactly like announce_startup(): a device with no
+# clock still answers the door, and every timestamp simply stays marked as
+# relative until a sync lands.
+####################################################################################
+
+# NTP's blocking UDP call must not outlast the watchdog. ntptime.timeout is a
+# module global on this port; set low, and the sync is bracketed by feeds.
+NTP_TIMEOUT_S = 2
+# Resync cadence. The RP2040 RTC drifts, so a periodic re-read keeps the
+# anchor honest. Timer-gated like the heartbeat, and NTP-only: it never
+# touches flash. Twelve hours is far tighter than the drift needs but costs
+# only one small UDP round trip.
+NTP_RESYNC_MS = 43200000
+# Epochs below this (2020-01-01 UTC in the Unix epoch) are rejected as
+# garbage: a stalled NTP read can return 0 or a tiny number, and anchoring to
+# that would date every ring to 1970. Guards against a bad sync poisoning the
+# clock.
+EPOCH_SANITY_FLOOR = 1577836800
+
+# MicroPython's epoch is 2000-01-01, not Unix's 1970-01-01. ntptime.time()
+# already returns seconds in the MicroPython epoch, and time.gmtime() expects
+# the same, so the two are consistent with each other and no conversion is
+# needed between them. The sanity floor above is expressed in the Unix epoch
+# for readability and converted once here.
+EPOCH_2000_OFFSET = 946684800
+EPOCH_SANITY_FLOOR_MP = EPOCH_SANITY_FLOOR - EPOCH_2000_OFFSET
+
+# The live anchor: (epoch_at_anchor, ticks_ms_at_anchor). None until a sync
+# lands. Read through clock_now(), never directly.
+clockAnchorEpoch = None
+clockAnchorTicks = 0
+lastNtpSync = 0
+# True once at least one sync has ever succeeded this run. Distinguishes
+# "never synced" from "synced but now overdue", which read differently in the
+# heartbeat.
+clockEverSynced = False
 
 ####################################################################################
 # B2 watchdog.
@@ -664,6 +738,19 @@ def report(message):
     print(message)
     append_to_log(message)
 
+def log_prefix():
+    """Timestamp prefix for a log line.
+
+    A real wall-clock time once C1 has synced; otherwise the ticks_ms value
+    tagged with a leading 't' so a relative stamp can never be mistaken for
+    an absolute one. This is the roadmap's "mark those entries as such": a
+    log spanning a sync shows exactly where real time began.
+    """
+    epoch = clock_now()
+    if epoch is not None:
+        return format_timestamp(epoch)
+    return 't' + str(time.ticks_ms())
+
 def append_to_log(message):
     """Append, dropping the oldest lines once full.
 
@@ -673,7 +760,7 @@ def append_to_log(message):
     discarded the errors that explained it, and buried the console in
     notices. Exactly backwards for diagnosis.
     """
-    logLines.append(str(time.ticks_ms()) + ' ' + message)
+    logLines.append(log_prefix() + ' ' + message)
     while len(logLines) > LOG_MAX_LINES:
         # Drop the oldest. Refusing new entries instead, as this once did,
         # preserves the least recent events -- backwards for diagnosis.
@@ -715,7 +802,7 @@ def print_log(chatId):
 def reset_log():
     global wifiData
     del logLines[:]
-    logLines.append(str(time.ticks_ms()) + ' ' + wifiData)
+    logLines.append(log_prefix() + ' ' + wifiData)
 
 ####################################################################################
 # Tier 2 persistence.
@@ -1351,14 +1438,135 @@ def process_input(entry):
     # not discarded until Telegram confirms it.
     enqueue_ring(width)
 
-def current_epoch():
-    """Wall-clock seconds, or None until C1 syncs the clock.
+def clock_now():
+    """Current wall-clock epoch (MicroPython epoch), or None if unsynced.
 
-    Until then a queued ring has no knowable absolute time, and one
-    restored from flash cannot even be aged -- ticks_ms restarts at zero.
-    The field exists now so C1 needs no schema change.
+    Derived from the anchor rather than read from anything: epoch at the
+    anchor, plus however long ticks_ms says has passed since. ticks_diff
+    keeps the elapsed term correct across the ticks_ms wrap, so this clock
+    survives longer than the raw counter that feeds it.
     """
-    return state_get('epochAnchor', None)
+    if clockAnchorEpoch is None:
+        return None
+    elapsed = time.ticks_diff(time.ticks_ms(), clockAnchorTicks)
+    # ticks_ms can read microscopically behind a stored value across a wrap
+    # boundary; never let the clock run backwards.
+    if elapsed < 0:
+        elapsed = 0
+    return clockAnchorEpoch + elapsed // 1000
+
+def clock_is_live():
+    """True when a real time is available."""
+    return clockAnchorEpoch is not None
+
+def set_clock_anchor(epoch):
+    """Record a fresh (epoch, ticks) anchor, in RAM and, coarsely, on flash.
+
+    The flash copy is only for aging rings recovered after a reset, so it is
+    written through state_set (which skips the write when unchanged) and its
+    imprecision is accepted: see the section comment.
+    """
+    global clockAnchorEpoch, clockAnchorTicks, clockEverSynced
+    clockAnchorEpoch = epoch
+    clockAnchorTicks = time.ticks_ms()
+    clockEverSynced = True
+    # Coarse fallback for restored-ring aging. Not the live clock.
+    state_set('epochAnchor', epoch)
+
+def sync_clock():
+    """Sync the wall clock from NTP. Best effort, never fatal, never raises.
+
+    Returns True on a good sync. A failure leaves any existing anchor in
+    place: a stale clock beats no clock, and the entries stay tagged with
+    their age since last sync through the heartbeat rather than silently
+    presenting drift as truth.
+    """
+    global lastNtpSync
+    if ntptime is None:
+        return False
+    if not is_wifi_connected():
+        return False
+    # Bracket the blocking UDP call with feeds; set the module timeout low so
+    # a dead NTP server cannot approach the watchdog ceiling.
+    feed_watchdog()
+    try:
+        ntptime.timeout = NTP_TIMEOUT_S
+    except Exception:
+        # Older ntptime without a configurable timeout. The watchdog remains
+        # the backstop, exactly as for urequests.
+        pass
+    try:
+        epoch = ntptime.time()
+    except Exception as e:
+        append_to_log('NTP sync failed: ' + str(e))
+        feed_watchdog()
+        return False
+    feed_watchdog()
+    if epoch < EPOCH_SANITY_FLOOR_MP:
+        # A stalled read can return 0 or a tiny value. Anchoring to that
+        # would date every ring to the epoch, which is worse than no clock.
+        append_to_log('NTP returned an implausible epoch; ignoring it')
+        return False
+    lastNtpSync = time.ticks_ms()
+    set_clock_anchor(epoch)
+    report('Clock synced: ' + format_timestamp(clock_now()))
+    return True
+
+def maybe_resync_clock():
+    """Resync on the timer, or take a first sync as soon as one is possible.
+
+    Timer-gated like the heartbeat and NTP-only, so it never touches flash.
+    An unsynced clock retries every pass it can, which is cheap: the guards
+    in sync_clock() return before any network work when WiFi is down.
+    """
+    if not clockEverSynced:
+        return sync_clock()
+    if time.ticks_diff(time.ticks_ms(), lastNtpSync) < NTP_RESYNC_MS:
+        return False
+    return sync_clock()
+
+def format_timestamp(epoch):
+    """Render an epoch as 'YYYY-MM-DD HH:MM:SS +ZZZZ', local per utcOffset.
+
+    The stored epoch is UTC; the offset is applied here at display time only.
+    The trailing offset tag makes the applied zone explicit, so a fixed
+    offset that has fallen out of step with daylight saving is visible rather
+    than silently wrong.
+    """
+    if epoch is None:
+        return 'unsynced'
+    local = epoch + utcOffset
+    # time.gmtime on a UTC-plus-offset value yields local wall-clock parts
+    # without needing the port to know any timezone.
+    t = time.gmtime(local)
+    sign = '+' if utcOffset >= 0 else '-'
+    off = abs(utcOffset)
+    tag = '%s%02d%02d' % (sign, off // 3600, (off % 3600) // 60)
+    return '%04d-%02d-%02d %02d:%02d:%02d %s' % (
+        t[0], t[1], t[2], t[3], t[4], t[5], tag)
+
+def clock_status():
+    """One-line clock state for the heartbeat.
+
+    Distinguishes never-synced from synced, and shows how long since the
+    last successful sync so drift is visible: a clock that stopped syncing
+    hours ago is presenting an increasingly wrong time, and the heartbeat
+    is where that should show.
+    """
+    if not clock_is_live():
+        return 'unsynced (using relative time)'
+    since = time.ticks_diff(time.ticks_ms(), lastNtpSync)
+    return format_timestamp(clock_now()) + \
+        ' (synced ' + format_uptime(since) + ' ago)'
+
+def current_epoch():
+    """Wall-clock epoch for a ring arriving now, or None if unsynced.
+
+    A queued ring records the real time it arrived when the clock is live,
+    and None when it is not: a ring caught before the first sync still has
+    no knowable absolute time, and one restored from flash cannot be aged.
+    """
+    return clock_now()
 
 def enqueue_ring(width):
     global queueDropped
@@ -1376,8 +1584,22 @@ def enqueue_ring(width):
         snapshot_queue()
 
 def describe_delay(entry):
+    """Trailing note on a delivered ring: when it rang, or how late it is.
+
+    A ring carrying a real epoch shows its wall-clock time, which is what
+    C1 exists for. A restored ring's epoch is only coarse (the device may
+    have been off between the anchor write and the next boot), so it is
+    tagged approximate. Without any epoch the old relative wording stands:
+    a restart note, or a delay in seconds once past the notice threshold.
+    """
+    epoch = entry[Q_EPOCH]
     if entry[Q_RESTORED]:
+        if epoch is not None:
+            return ' (rang around ' + format_timestamp(epoch) + \
+                   ', before a restart)'
         return ' (queued before a restart)'
+    if epoch is not None:
+        return ' (' + format_timestamp(epoch) + ')'
     age = time.ticks_diff(time.ticks_ms(), entry[Q_TICKS])
     if age < DELAY_NOTICE_MS:
         return ''
@@ -1486,6 +1708,7 @@ def heartbeat_text():
         ' (' + reset_verdict(resetInfo) + ')',
         'Free memory: ' + str(gc.mem_free()) + ' bytes',
         'WiFi: ' + wifi_rssi() + ', ' + str(wifiData),
+        'Clock: ' + clock_status(),
         input_summary(),
         'Flash writes: ' + str(state_get('writes', 0)),
     ]
@@ -1652,6 +1875,11 @@ def boot():
 
     try:
         connect_wifi()
+        # Before announcing, so the startup message and its reset diagnosis
+        # carry a real timestamp rather than a relative one. Best effort: a
+        # failed sync just leaves the clock unsynced, and the main loop
+        # retries. Never fatal.
+        sync_clock()
         # Before announcing: otherwise a reset replays every command
         # Telegram has been holding, including ones from yesterday.
         discard_update_backlog()
@@ -1693,6 +1921,7 @@ while True:
         prevPassTicks = lastPassTicks
         lastPassTicks = time.ticks_ms()
         uptimeMs += time.ticks_diff(lastPassTicks, prevPassTicks)
+        maybe_resync_clock()
         maybe_heartbeat()
 
         sleep_fed(loopDelay)

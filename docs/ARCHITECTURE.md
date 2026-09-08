@@ -222,11 +222,12 @@ that actually matters.
 
 ```json
 {
-  "v": 2,
+  "v": 3,
   "chatId": null,
   "epochAnchor": null,
   "writes": 0,
-  "boots": 0
+  "boots": 0,
+  "queue": []
 }
 ```
 
@@ -234,9 +235,10 @@ that actually matters.
 | --- | --- |
 | `v` | Schema version. Drives migration and downgrade safety. |
 | `chatId` | Overrides the configured chat after a supergroup migration. |
-| `epochAnchor` | Wall-clock epoch captured at the last NTP sync. |
+| `epochAnchor` | Wall-clock epoch at the last NTP sync (C1). Coarse: a fallback for aging rings recovered after a reset, not the live clock, which lives in RAM. |
 | `writes` | Monotonic write counter. Makes wear observable rather than theoretical. |
 | `boots` | Count of **stable** boots. See below. |
+| `queue` | Undelivered rings persisted across a reset (B6, Tier 3). Written only once an outage has already run for minutes. |
 
 ### API
 
@@ -746,6 +748,76 @@ the boot diagnosis matters more, and the next one is only hours away.
 
 ---
 
+## Wall clock
+
+`ticks_ms` answers "how long since boot", never "what time is it", and it wraps
+at roughly 12.4 days. A log line reading `3847221` tells an incident report
+nothing, and the reboot investigation on the production unit is far easier to
+correlate against real times than against relative ones. C1 adds a wall clock
+from NTP.
+
+### An anchor, not repeated polling
+
+One NTP read captures an anchor: the epoch at a known `ticks_ms`. Any later
+wall-clock time is then `anchor + elapsed`, where `elapsed` comes from
+`ticks_diff` and is therefore wrap-safe. The derived clock outlives the raw
+`ticks_ms` counter that feeds it: the counter wraps, but the difference across a
+single pass never does, and the anchor is refreshed long before 12 days pass.
+
+Polling NTP per event would be absurd, so the clock is read from the anchor
+through `clock_now()`, which returns `None` while unsynced and never touches the
+network.
+
+### RAM is authoritative, flash is a coarse fallback
+
+The live anchor is in RAM and decides whether the clock is live. The copy in
+`state.json` (`epochAnchor`) exists only to age rings recovered from flash after
+a reset, and is coarse by nature: the device may have been unpowered for hours
+between the anchor being written and the next boot reading it. A restored ring's
+time is therefore always tagged approximate, consistent with the existing honesty
+that a restored ring cannot be precisely aged.
+
+### The fallback is marked, never silent
+
+Before the first sync, a log line carries a `t`-prefixed `ticks_ms` value, for
+example `t3847221`. After the sync it carries a real timestamp. A relative stamp
+can never be mistaken for an absolute one, and a log spanning a sync shows
+exactly where real time began. This is the roadmap's "mark those entries as
+such", made concrete.
+
+### Local time comes from `board.py`
+
+`utcOffset` (seconds, optional, defaulting to UTC) is read exactly as
+`wifiPowerSave` is, and applied at **display time only**: the stored anchor stays
+UTC, which keeps the arithmetic trivial and any future timezone change free. The
+offset is a fixed number and does not follow daylight saving. That is deliberate:
+a whole-clock error is obvious, whereas a one-hour DST skew is quiet enough to
+mislead, so every rendered timestamp is tagged with the offset it used (for
+example `+0100`). A wrong offset is then visible rather than silent, and a
+DST-aware variant can be added later without a schema change.
+
+### Never fatal
+
+NTP sync is best effort, exactly like `announce_startup`. A device with no clock
+still answers the door. The blocking UDP call is bracketed by watchdog feeds with
+a low socket timeout so it cannot approach the 8 s ceiling, an epoch below a 2020
+sanity floor is rejected rather than anchored (a stalled read that returns 0 must
+not date every ring to the epoch), and any exception leaves the previous anchor
+untouched: a stale clock beats no clock, and the heartbeat reports the age of the
+last sync so drift is visible.
+
+### Where the time surfaces
+
+| Site | Behaviour |
+| --- | --- |
+| Boot | Synced after `connect_wifi()`, before `announce_startup()`, so the startup message and its reset diagnosis carry a real time |
+| Main loop | `maybe_resync_clock()` takes the first sync as soon as the link allows, then resyncs on a timer; NTP-only, never flash |
+| Log lines | Real timestamp once synced, `t`-marked ticks before |
+| Delivered rings | The ring's wall-clock time when known, tagged approximate when restored, the old relative wording when no epoch exists |
+| Heartbeat | A `Clock:` line: the current time and how long since the last sync, or `unsynced` |
+
+---
+
 ## Undelivered rings
 
 A ring detected during a network outage used to be logged and then lost. Observed
@@ -790,9 +862,11 @@ knowable age. It is delivered marked `(queued before a restart)` rather than wit
 a fabricated time. A ring delayed *without* a reset does carry its real delay:
 `(delayed 90s)`.
 
-The `Q_EPOCH` field is already in the record and already persisted, holding
-`None` until C1 syncs a wall clock. Once it does, restored rings can carry a real
-timestamp with no schema change.
+The `Q_EPOCH` field carries the ring's wall-clock time once C1's clock is live
+(see [Wall clock](#wall-clock)), and `None` before the first sync. A restored
+ring's epoch is coarse, so it is shown tagged approximate; a ring with no epoch
+at all keeps the old relative wording. The field needed no schema change when C1
+landed: it was reserved from the start.
 
 ---
 
