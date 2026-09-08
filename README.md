@@ -16,16 +16,18 @@ This project works by sending a notification through a Telegram bot. You could s
 ### Hardware list
 
 - 01 Raspberry Pi Pico W
-- 01 180 ohms resistor.
-- 01 5.1 ohms resistor.
+- 01 180 Ω resistor.
+- 01 5.1 Ω resistor. (In series with the 180 Ω, giving the 185 Ω referred to below.)
 - 01 push button for reset.
 - 01 toggle switch for power.
 - 01 [PC817 optocoupler](https://www.reichelt.de/optokoppler-fototransistorausgang-5-3-kv-ctr-100-200-dip-4-sfh-617a-3-vis-p216809.html).
 - Your doorbell :D Mine is a Ritto Twinbus 7630 indoor.
-- 01 USB-C battery charger - [DEBO1 3.7LI 1.0A](https://www.reichelt.de/de/de/entwicklerboards-ladeplatine-fuer-3-7v-li-akkus-usb-c-1a-debo1-3-7li-1-0a-p291398.html) - Based on the TC4056 chipset (**Optional** and not present on V1.0 and V1.2).
+- 01 USB-C battery charger, [DEBO1 3.7LI 1.0A](https://www.reichelt.de/de/de/entwicklerboards-ladeplatine-fuer-3-7v-li-akkus-usb-c-1a-debo1-3-7li-1-0a-p291398.html), based on the TC4056 chipset (**Optional** and not present on V1.0 and V1.2).
 - 01 [150 mAh lipo battery](https://www.amazon.de/VinCorp-150mAh-Stecker-Empf%C3%A4nger-Quadrocopter/dp/B086B8NRQ4) (**Optional** and not present on V1.0 and V1.2).
 
 **DISCLAIMER:** Even though this project works fine for me and with my specific doorbell, it doesn't mean it will work with any system. This project does not come with any guarantee whatsoever. If you want to implement this, do it at your own responsibility and risk.
+
+**If your intercom is a shared building system, read this first.** A Ritto TwinBus is not a private doorbell: it is wired throughout the building and fed from a power supply in a communal area. A mistake can take out every flat's intercom, not just yours. Ritto's own handbook warns that induced voltage spikes cause malfunctions, and the bus supply has only a few hundred milliamps to give, so do not try to power anything from it. Work carefully, and if the installation serves other people, consider whether you are entitled to modify it at all.
 
 ### Schematics
 
@@ -55,7 +57,7 @@ Check more pictures [here.](gallery.md)
 If you want to order your own PCB, first grab the desired Gerber file below:
 
 - [Regular version (Through hole resistors)](assets/Gerber_PicoDoorbell_PCB_PicoDoorbell_2024-07-11_02.zip).
-- [SMD version (Single SMD resistor)]((assets/Gerber_PicoDoorbell_PCB_PicoDoorbell_2024-07-11_02.zip)).
+- [SMD version (Single SMD resistor)](assets/Gerber_PicoDoorbell_PCB_PicoDoorbell_2024-07-11_02.zip).
 
 Take a look at our sponsor below for ordering.
 
@@ -95,13 +97,13 @@ sudo apt update && sudo apt install thonny
 
 If your Raspberry Pi Pico W is already flashed with MicroPython, skip to the next step. Otherwise:
 
-- Download the latest Pico W EF2 file [here](https://micropython.org/download/rp2-pico-w/rp2-pico-w-latest.uf2) - Please note this **only** works with the Raspberry Pi Pico W. If you have the board without Wi-Fi **do not** flash it with this file.
+- Download the latest Pico W UF2 file [here](https://micropython.org/download/rp2-pico-w/rp2-pico-w-latest.uf2). Please note this **only** works with the Raspberry Pi Pico W. If you have the board without Wi-Fi **do not** flash it with this file.
 - Before plugging your Pico into your computer, locate and press the BOOTSEL button on the board and hold it.
 
 <img src="https://github.com/Mauker1/PicoDoorBell/blob/main/images/pico02.png" data-canonical-src="https://github.com/Mauker1/PicoDoorBell/blob/main/images/pico02.png" width="400" />
 
 - With the button still pressed, connect your device. It should mount as a mass storage device on your computer, named PI-RP2.
-- Drag and drop the EF2 file into the PI-RP2 storage. After it finishes copying, it will automatically unmount from your computer. Don't worry when it does; this is entirely normal.
+- Drag and drop the UF2 file into the PI-RP2 storage. After it finishes copying, it will automatically unmount from your computer. Don't worry when it does; this is entirely normal.
 - And you're done. Your Pico W is now ready to run MicroPython code :)
 
 For more information, please check the [official documentation](https://www.raspberrypi.com/documentation/microcontrollers/micropython.html) on the Raspberry Pi Foundation website.
@@ -114,7 +116,11 @@ For more information on setting up Thonny, please see the [official documentatio
 
 ### Adding the code to your Pico W
 
-After setting everything up, all you need to do is copy & paste the contents of the `main.py` file into Thonny and save it. Do the same with the `secrets.py` file. **But don't run the code just yet**. We still need to create a bot on Telegram and change the placeholders in the `secrets.py` file.
+After setting everything up, copy & paste the contents of the `main.py` file into Thonny and save it. Do the same with the `secrets.py` file.
+
+You also need a `board.py` file, which holds the pin assignments for your carrier board. Copy the one matching your revision from the `boards/` folder and save it on the device as `board.py`. The firmware refuses to start without it, rather than silently watching the wrong pin.
+
+**But don't run the code just yet**. We still need to create a bot on Telegram and change the placeholders in the `secrets.py` file.
 
 ## Setting up the Wi-Fi
 
@@ -144,7 +150,9 @@ Now choose if you want to send the notifications directly as a DM or through a c
 
 #### Sending the notification as a DM
 
-To make the bot send a message to yourself, you first need to send a message to it. Otherwise, it won't be able to send you any messages. This **must**  before anything else. After you send the message, you need to get your user ID on Telegram. To do so, use [this bot.](https://t.me/userinfobot); once it answers you, get the ID and replace it under the `telegramDmUid` key inside the `secrets.py` file.
+> **Note:** this path is not currently working. The firmware only parses channel posts, so a bot sending direct messages will not respond to commands. Use a channel until this is fixed. Notifications themselves are unaffected.
+
+To make the bot send a message to yourself, you first need to send a message to it. Otherwise, it won't be able to send you any messages. This **must** happen before anything else. After you send the message, you need to get your user ID on Telegram. To do so, use [this bot.](https://t.me/userinfobot); once it answers you, get the ID and replace it under the `telegramDmUid` key inside the `secrets.py` file.
 
 #### Sending the notification in a channel
 
@@ -156,9 +164,13 @@ For more information on any of the steps above, please refer to the official [Te
 
 #### Dumping the device logs
 
-To make the bot dump the device inner log, you may send a message with the command `/log` in the chat you configured your bot to send the messages. The bot queries for commands **every minute**. This will also clear the internal logs.
+To make the bot dump the device inner log, you may send a message with the command `/log` in the chat you configured your bot to send the messages. The bot queries for commands **every minute**.
 
-**OBS.:** The device will store at most 10000 characters in the log, if it reaches that size, it'll stop appending new messages until the log is flushed.
+The log holds the most recent 120 entries. Once full, the oldest entry is dropped to make room, so the log always describes what happened most recently. A long log is split across several Telegram messages, since a single message cannot exceed 4096 characters, and it is cleared only once every part has been delivered.
+
+#### Checking the device health
+
+The command `/status` reports uptime, free memory, signal strength, ring and transient counts, and the number of flash writes. The device also sends the same report on its own every six hours, so a device that has gone quiet is noticeable.
 
 ---
 
@@ -168,7 +180,7 @@ When you have all the placeholders replaced inside `secrets.py`, you may run the
 
 ## Final details 
 
-- The GPIO that I used as an input to detect the button press was `GP16`, you may chose a different one to fit your project. You can change that inside `main.py`.
+- The GPIO that I used as an input to detect the button press was `GP16`, you may choose a different one to fit your project. You can change that inside `board.py`.
 - You can also send the startup and alert message inside `main.py`, look for the variables named `startupText` and `text`.
-- I am running this project on Germany, you can change the country configuration inside `main.py` as well. Look for `rp2.country('DE')`.
+- I am running this project in Germany, you can change the country configuration inside `main.py` as well. Look for `rp2.country('DE')`.
 - In my project I am using an optocoupler to detect the signal from my doorbell, since it runs on a different voltage than my Pico W. The doorbell sends a signal at 5V and the Pico W runs at 3.3V. I used the PC817 optocoupler with a 185Ω equivalent resistor. You can check [the datasheet here.](https://www.farnell.com/datasheets/73758.pdf)
