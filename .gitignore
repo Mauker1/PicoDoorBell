@@ -129,3 +129,18 @@ dmypy.json
 .pyre/
 
 .DS_Store
+
+# PicoDoorBell: device-local and session files
+# Note: secrets.py is intentionally committed with stub values as a template.
+# Real credentials replace the stubs on-device and must never be committed.
+# Tier 2 state written on-device (boot counter, queue snapshots, epoch anchor).
+# Runtime data, not source; each unit owns its own.
+state.json
+state.json.tmp
+# board.py is the per-unit copy of a boards/ file, chosen per device. The
+# revision templates in boards/ are committed; the active copy is not.
+/board.py
+# Session handover: a bootstrapping artifact regenerated from the docs each
+# time, not project documentation. Kept local so it cannot drift from the
+# committed docs or accidentally carry device details into the repo.
+handover.md
