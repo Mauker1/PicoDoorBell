@@ -28,6 +28,36 @@ sufficient is free memory staying flat over days rather than any single reading.
 > compiled bytecode in RAM. A baseline is only meaningful against the same build,
 > which is also the first real datum for costing the E2 module split.
 
+### Free memory falls for the first two hours, then should not
+
+The log is a list of separate string objects, so it costs RAM as it fills:
+roughly 33 characters plus per-object overhead, call it 50–60 bytes a line. Going
+from an empty log to the 120-line cap is therefore about **6–7 KB**, and it is
+spent gradually over the first two hours of uptime.
+
+Measured on the bench: 159,968 bytes at 2 minutes with a 3-line log, 153,984 at
+71 minutes with 96 lines. The 5,984-byte drop is very close to what 93 new lines
+predicts.
+
+**The log caps at 120 lines, so the decline must stop.** ✅ Confirmed:
+
+| Uptime | Free memory | Rate since previous |
+| --- | --- | --- |
+| 2 min | 159,968 | — |
+| 71 min | 153,984 | −86.7 B/min |
+| 181 min | 153,184 | −7.3 B/min |
+| 360 min | 153,264 | +0.4 B/min |
+| 720 min | **153,264** | **0** |
+
+Identical to the byte across six hours of continuous polling. The 7.3 B/min at
+three hours was the tail of the log filling, not a trend.
+
+**This verifies the socket-leak fix.** Closing the response in a `finally` and
+collecting after every request is sufficient; free memory holds over six hours of
+polling once the log stops growing. It was the last open question from the
+original review, and it could not have been answered without the heartbeat: every
+attempt to read the figure by hand ended the run that was producing it.
+
 ---
 
 ## Target platform
@@ -503,15 +533,14 @@ left `boots` at 2, and both attempts reported `boot #3`, the second with
 | `watchdog` | warm + `WATCHDOG_REASON` bit 0 | A real timeout |
 | `warm-reset` | warm, no TIMER bit | Soft reboot |
 
-> **Reading `warm-reset` on production.** Nothing there interacts with the REPL,
-> so spontaneous soft reboots do not occur — once B2 lands, a `warm-reset` on the
-> production unit means the watchdog bit. One exception to design around: B4 plans
-> a deliberate `machine.reset()` after repeated WiFi failures, which would look
-> identical. Intentional resets should set a marker in a spare scratch register
-> first, so a self-inflicted reset is never mistaken for a watchdog bite.
+> **Reading these on production.** Nothing there interacts with the REPL, so
+> spontaneous soft reboots do not occur: a `warm-reset` on the production unit
+> would be unexplained and worth investigating. A genuine watchdog bite reports
+> `watchdog`, and the firmware's own resets report `self-reset` with a reason,
+> so all three are distinguishable.
 >
-> Bench boot counts are not comparable: every Ctrl-C and re-run during development
-> increments the counter and logs a `warm-reset`.
+> Bench boot counts are not comparable: every Ctrl-C increments the counter and
+> reads `watchdog` on the next boot, since nothing feeds once the loop exits.
 | `unknown` | cold, no flags | No evidence |
 
 ### Register map
@@ -994,7 +1023,8 @@ refuses to start does not.
 
 Ctrl-C leaves the main loop, so nothing feeds, and the board resets a few seconds
 later. That is correct in service — an exited loop is a dead doorbell — but it
-means development interruptions now produce a reset and a `warm-reset` verdict.
+means development interruptions now produce a reset, reported as `watchdog` on
+the next boot — a real timeout, since nothing feeds once the loop has exited.
 The firmware says so on the way out.
 
 ---

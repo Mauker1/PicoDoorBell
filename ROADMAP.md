@@ -397,9 +397,21 @@ log to console on *every* error.
 handled by a compact code in the scratch registers plus, optionally, a *single* flash write
 on the way to a reset. Never continuous log persistence.
 
-### 🧪 C3 — Heartbeat — **P0**
+### 🔬 C3 — Heartbeat — **P0**
 
-> **Still unverified:** the memory trend needs days, not hours. One reading is a baseline, not a verification.
+> ✅ **Verified.** Free memory: 159,968 at 2 min, 153,984 at 71 min, 153,184 at 181 min,
+> then **153,264 at both 360 and 720 min** — identical to the byte across six hours of
+> continuous polling. The early decline was the log filling, and the buffer caps at 120
+> lines.
+>
+> Two other things fell out of the same run: heartbeats arrived unprompted at six and
+> twelve hours, so the schedule works unattended, and flash writes stayed at 38 for twelve
+> hours, confirming empirically that nothing writes on a timer.
+>
+> **This closes the socket-leak question** from the original review. It could not have been
+> answered without the heartbeat — every attempt to read the figure by hand ended the run
+> that was producing it.
+
 Periodic "alive" ping carrying uptime, free memory, RSSI, alert count and flash write count.
 Optionally a `/status` command for on-demand health.
 
@@ -475,6 +487,20 @@ The flag's actual job is distinguishing the boot-time announcement from a post-r
 
 Fold into whichever commit next touches those strings, or into E1 when the message text moves
 to configuration.
+
+---
+
+### C7 — Reconsider the maximum plausible ring — **P3**
+`STUCK_INPUT_MS` is 15 s, so anything shorter is accepted as a ring. The bench logged
+`Doorbell ring, 13513ms` and `11480ms` from a hand-held wire, and both would have sent
+alerts.
+
+Harmless on the bench, but on production a 13-second assertion is not a ring: terminal 04
+sends about 2 s, and a held button produces repeated bursts (see `G10`) rather than one long
+pulse. A ceiling nearer 5 s would treat a long assertion as the fault it probably is.
+
+Wants `G10`'s burst measurement first — if a held button really does produce one long pulse
+on some installations, the current ceiling is right.
 
 ---
 
@@ -653,6 +679,11 @@ Cover:
 - the connection state machine
 
 ### F3 — CI — **P3**
+> **Partly done.** `tools/check.py` already runs everything a CI job would: trailing
+> newlines, byte-compilation, roadmap structure and all eight suites, exiting non-zero on
+> failure. What remains is wiring it to a GitHub Actions workflow and adding `ruff` and an
+> `mpy-cross` compile check.
+
 Ruff lint, run tests, `mpy-cross` compile check to catch syntax errors before they reach a
 board.
 
