@@ -374,11 +374,42 @@ tradeoff.
 
 ## C. Observability
 
-### C1: Real timestamps (P1)
+### 🧪 C1: Real timestamps (P1)
+
+> **Still unverified:** implemented and passing on the bench test suite
+> (`tests/test_clock.py`, 34 assertions), but no soak run has yet confirmed a real NTP sync,
+> an unattended resync, or a timestamp surviving the `ticks_ms` wrap. Waiting on a bench run
+> long enough to see one resync (12 h), and on a first sync against a live NTP server rather
+> than the stub.
+
 NTP sync at boot with periodic resync. Fall back to `ticks_ms` when unsynced and mark those
 entries as such.
 
 `ticks_ms` wraps at ~12.4 days, and `3847221` is useless in an incident report.
+
+**Design: an anchor, not repeated polling.** One NTP read captures the epoch at a known
+`ticks_ms`; any later wall-clock time is `anchor + elapsed`, with `ticks_diff` keeping the
+elapsed term wrap-safe. The derived clock therefore outlives the raw counter that feeds it.
+The anchor lives in RAM and is authoritative for "is the clock live"; the copy in
+`state.json` (`epochAnchor`) is a coarse fallback for aging rings recovered after a reset,
+and restored-ring times are tagged approximate accordingly.
+
+**Fallback marking.** A log line before the first sync carries a `t`-prefixed `ticks_ms`
+value (for example `t3847221`), so a relative stamp can never be read as an absolute one. A
+line after the sync carries a real timestamp, so a log spanning a sync shows exactly where
+real time began.
+
+**Local time from `board.py`.** `utcOffset` (seconds, optional, defaults to UTC) is read the
+same way as `wifiPowerSave` and applied at display time only: the stored anchor stays UTC.
+The offset is a fixed number and does **not** follow daylight saving, which is a deliberate
+limit, not an oversight: a whole-clock error is obvious, whereas a one-hour DST skew is quiet
+enough to mislead, so every timestamp is tagged with the offset it used (for example `+0100`)
+to keep any skew visible. A future item can make it DST-aware without a schema change.
+
+**Never fatal.** NTP sync is best effort, exactly like `announce_startup`: a device with no
+clock still answers the door, an implausible epoch (below a 2020 sanity floor) is rejected
+rather than anchored, and the blocking UDP call is bracketed by watchdog feeds with a low
+socket timeout.
 
 ### 🔬 C2: Structured, bounded logging (P2, partially done)
 > Bounding and the ring behaviour landed early: the log is now a bounded list of lines rather
