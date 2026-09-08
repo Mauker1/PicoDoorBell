@@ -12,12 +12,12 @@ python3 tools/check.py
 Trailing newlines, byte-compilation, roadmap structure, and every suite in `tests/`. Exits
 non-zero on any failure, so it works as a pre-commit hook.
 
-A syntax error caught here is a minute; the same error on a board is a device that will not
+A syntax error caught here is a minute. The same error on a board is a device that will not
 start, found by walking to the entryway.
 
 ---
 
-**Setup:** bench unit on USB power (not battery — it masks supply behaviour),
+**Setup:** bench unit on USB power (not battery, which masks supply behaviour),
 `board.py` copied from `boards/board_prototype.py` (GP18), bench `secrets.py`,
 Thonny attached.
 
@@ -29,17 +29,17 @@ Once B2 is running, **Ctrl-C resets the board a few seconds later**. Leaving the
 main loop stops the feeding, and an RP2040 watchdog cannot be disarmed. The
 firmware prints a warning on the way out.
 
-That is correct in service — an exited loop is a dead doorbell — but it means you
-can no longer stop the script and stay at the REPL. To get a REPL, stop the
+That is correct in service, since an exited loop is a dead doorbell, but it means you can no
+longer stop the script and stay at the REPL. To get a REPL, stop the
 script and reconnect after the reset, or hold the board in the bootloader.
 
 Every Ctrl-C also increments the boot counter and reads `verdict=watchdog` on the next
-boot -- it is a real timeout, since nothing is feeding once the loop exits.
+boot. It is a real timeout, since nothing feeds once the loop exits.
 Expected, not a fault.
 
 ---
 
-## B1 — IRQ-driven input
+## B1: IRQ-driven input
 
 Simulate a ring by applying 5 V to the input, as with the bench supply.
 
@@ -56,7 +56,7 @@ Both lines must appear. No pin message means `board.py` is missing or wrong.
 
 Apply 5 V for about two seconds.
 
-- Console: `Doorbell ring, ~2000ms` — the measured width, which should match the
+- Console: `Doorbell ring, ~2000ms`, the measured width, which should match the
   ~2 s from the G7 measurement
 - Telegram: `Doorbell activated!` within a couple of seconds
 
@@ -70,15 +70,15 @@ Tap 5 V on and off as briefly as you can, well under 150 ms.
 - Console: `Doorbell transient ignored, NNms`
 - Telegram: **nothing**
 
-If a short tap produces an alert, `MIN_PULSE_MS` is not doing its job — which
-also means EMI on the line could produce phantom notifications.
+If a short tap produces an alert, `MIN_PULSE_MS` is not doing its job, which also means
+EMI on the line could produce phantom notifications.
 
 If your tap is too slow to land under 150 ms, temporarily lower `MIN_PULSE_MS` to
 something like 400 and retry, then put it back.
 
 ### 4. One ring, one alert
 
-Ring, wait two seconds, ring again — both within the 5 s lockout.
+Ring, wait two seconds, ring again, both within the 5 s lockout.
 
 - Telegram: **one** message, not two
 
@@ -101,8 +101,8 @@ Hold 5 V on for more than 15 seconds.
 - Console: `Doorbell input stuck high`
 - Telegram: **nothing**
 
-Then release and ring normally. It should behave as usual — a stuck input must not
-wedge the input permanently.
+Then release and ring normally. It should behave as usual: a stuck input must not wedge
+the input permanently.
 
 ### 7. Quiet line
 
@@ -115,12 +115,12 @@ given the open EMI question.
 
 ---
 
-## B2 — Watchdog
+## B2: Watchdog
 
 ### 8. It is armed
 
 `Watchdog armed at 8000ms` during boot. If you see `Watchdog unavailable: ...`
-instead, the board is running unguarded — deliberate, but worth knowing.
+instead, the board is running unguarded. Deliberate, but worth knowing.
 
 ### 9. It actually bites
 
@@ -138,8 +138,8 @@ messages...` cycles and a few rings.
 - No unexplained resets
 - The boot counter does not advance
 
-A reset here means feeding is insufficient somewhere — note what the console
-showed immediately before it.
+A reset here means feeding is insufficient somewhere. Note what the console showed
+immediately before it.
 
 ### 11. It does not bite during a network outage
 
@@ -161,7 +161,7 @@ error message.
 
 ## Currently under test
 
-`ROADMAP.md` marks these 🧪 — flashed to the bench but not yet verified. Each needs
+`ROADMAP.md` marks these 🧪, meaning flashed to the bench but not yet verified. Each needs
 something a short session cannot provide:
 
 | Item | Waiting on |
@@ -176,7 +176,7 @@ something a short session cannot provide:
 the current tree descends from, with the relevant code untouched since. Re-test what
 changed, plus anything still marked 🧪.
 
-### Changed since it was last verified — re-run these
+### Changed since it was last verified: re-run these
 
 | Check | Expect | Why |
 | --- | --- | --- |
@@ -187,12 +187,12 @@ changed, plus anything still marked 🧪.
 | Drop WiFi for a few minutes | `WiFi down (...)` every 10 s, no flood, then recovery | `B4`'s progress states and intervals changed |
 | Ctrl-C | Reset within ~8 s; next boot reads **`verdict=watchdog`** | Was `warm-reset` before the TIMER bit was decoded |
 
-### Still under test — see *Currently under test* above
+### Still under test (see *Currently under test* above)
 
 `A6` needs a log past 4096 characters. `A7` needs a backlog to discard. `C3` needs days of
 heartbeats.
 
-### Verified and unchanged — no need to repeat
+### Verified and unchanged: no need to repeat
 
 Ring detection and width measurement, transient rejection at 150 ms, one alert per ring
 inside the lockout, stuck-input handling and recovery, no phantom rings on a quiet line, the
@@ -201,7 +201,7 @@ watchdog arming, the flash write at the 60 s gate, and the queue surviving a res
 ### The one that only time can answer
 
 Free memory, read from `/status` rather than by killing the run. **The baseline for this
-build is 159,968 bytes** — not the 178,480 an earlier build reported, which was a smaller
+build is 159,968 bytes**, not the 178,480 an earlier build reported, which was a smaller
 binary. A single reading proves nothing; a flat figure across several heartbeats is the
 verification.
 

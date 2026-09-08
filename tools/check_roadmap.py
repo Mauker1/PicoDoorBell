@@ -16,7 +16,7 @@ DOC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 SECTION = re.compile(r'^## ([A-Z])\. ', re.M)
 TOP = re.compile(r'^## ')
-ITEM = re.compile(r'^### (?:✅ |🔬 |🧪 )?([A-Z])(\d+) — ')
+ITEM = re.compile(r'^### (?:✅ |🔬 |🧪 )?([A-Z])(\d+): ')
 ANY_ITEM = re.compile(r'^### ')
 
 problems = []

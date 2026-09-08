@@ -1,10 +1,10 @@
-# PicoDoorBell — Architecture
+# PicoDoorBell: Architecture
 
 How the firmware works and why it is built this way.
 
 Scope: this document describes **what exists**. `ROADMAP.md` describes what is
-planned. The `README.md` is the build guide — hardware, wiring and Telegram
-setup — and should stay free of internals.
+planned. The `README.md` is the build guide (hardware, wiring and Telegram
+setup) and should stay free of internals.
 
 ---
 
@@ -17,7 +17,7 @@ From the bench unit at v1.23.0, after boot with WiFi connected:
 | `gc.mem_free()` | **159,968 bytes** on the current build |
 | Filesystem | 4096-byte blocks, 212 total, 202 free (~830 KB free) |
 | Ring signal (terminal 04) | Idle at ground, 5 V DC for ~2 s, clean square wave |
-| Telegram round trip | 1–2 s, detection to delivery |
+| Telegram round trip | 1-2 s, detection to delivery |
 
 The memory figure is the reference for the leak watch: `do_request` closes every
 socket in a `finally` and collects afterwards, and the proof that this is
@@ -31,8 +31,8 @@ sufficient is free memory staying flat over days rather than any single reading.
 ### Free memory falls for the first two hours, then should not
 
 The log is a list of separate string objects, so it costs RAM as it fills:
-roughly 33 characters plus per-object overhead, call it 50–60 bytes a line. Going
-from an empty log to the 120-line cap is therefore about **6–7 KB**, and it is
+roughly 33 characters plus per-object overhead, call it 50-60 bytes a line. Going
+from an empty log to the 120-line cap is therefore about **6-7 KB**, and it is
 spent gradually over the first two hours of uptime.
 
 Measured on the bench: 159,968 bytes at 2 minutes with a 3-line log, 153,984 at
@@ -43,7 +43,7 @@ predicts.
 
 | Uptime | Free memory | Rate since previous |
 | --- | --- | --- |
-| 2 min | 159,968 | — |
+| 2 min | 159,968 | - |
 | 71 min | 153,984 | −86.7 B/min |
 | 181 min | 153,184 | −7.3 B/min |
 | 360 min | 153,264 | +0.4 B/min |
@@ -77,9 +77,9 @@ Production reboots intermittently and the cause is unresolved. The two remaining
 candidates are supply sag and RUN-pin pickup, and **the bench unit is immune to
 both by construction**:
 
-- *Supply sag* — the battery on VSYS is exactly the dip-absorbing buffer that
+- *Supply sag*: the battery on VSYS is exactly the dip-absorbing buffer that
   production lacks. The bench is immune to this one.
-- *RUN pickup* — the bench is **less exposed, not immune**. Both boards have a
+- *RUN pickup*: the bench is **less exposed, not immune**. Both boards have a
   button soldered to the carrier, so both have a RUN net. Production's fans out
   further, to a second button on wires through a connector.
 
@@ -138,15 +138,15 @@ failing loudly and degrading quietly, this codebase fails loudly.
 ## State tiers
 
 Persisted values are split into four tiers by **how often they are written**.
-The tier is not a suggestion — it determines whether a value may touch flash at
+The tier is not a suggestion: it determines whether a value may touch flash at
 all, and getting it wrong destroys hardware.
 
 | Tier | Medium | Survives | Cost per write | Contents |
 | --- | --- | --- | --- | --- |
 | **0** | RAM | nothing | free | Rolling log, alert counters, live event queue |
-| **1** | Watchdog scratch registers | soft reset and watchdog only — **any** hardware reset clears them, RUN included | free | Magic word, unstable-boot count |
-| **2** | Flash — `state.json` | everything | one 4 KB sector erase | `chatId`, `epochAnchor`, `writes` |
-| **3** | Flash — `state.json` | everything | one 4 KB sector erase | Undelivered rings, written only after an outage passes five minutes |
+| **1** | Watchdog scratch registers | soft reset and watchdog only; **any** hardware reset clears them, RUN included | free | Magic word, unstable-boot count |
+| **2** | Flash (`state.json`) | everything | one 4 KB sector erase | `chatId`, `epochAnchor`, `writes` |
+| **3** | Flash (`state.json`) | everything | one 4 KB sector erase | Undelivered rings, written only after an outage passes five minutes |
 
 ### The rule
 
@@ -177,7 +177,7 @@ ground worth reasoning about, which is why the rule is absolute rather than a
 budget.
 
 Real figures should be better than the table: MicroPython's RP2 port uses
-littlefs2, which does *dynamic* wear levelling — allocating from a rotating
+littlefs2, which does *dynamic* wear levelling: allocating from a rotating
 pointer across free blocks rather than rewriting in place. Treat that as
 headroom, not permission. littlefs does not do *static* levelling, so blocks
 holding rarely-changed data never rotate into the pool and the metadata pair
@@ -187,7 +187,7 @@ stays comparatively hot.
 
 Worn NOR flash does not fail cleanly. It begins failing **writes** while reads
 still succeed. The result is a device that boots, runs, looks healthy, and
-silently stops persisting state — the exact failure class this firmware is
+silently stops persisting state: the exact failure class this firmware is
 built to eliminate. Replacing a cheap board is easy; noticing you need to is
 not.
 
@@ -200,9 +200,9 @@ Ask, in order:
    Tier 0.
 2. **Does it only need to survive a soft reboot or watchdog bite?** → **Tier 1**.
    Free, zero wear, 32 bytes total. Note that *any* hardware reset clears these,
-   RUN included — confirmed on hardware — so they do not survive as much as the
+   RUN included, confirmed on hardware, so they do not survive as much as the
    name suggests.
-3. **Does it change rarely — a handful of times in the device's life?** →
+3. **Does it change rarely, a handful of times in the device's life?** →
    **Tier 2**. A chat ID that changes on supergroup migration qualifies. A
    "last doorbell press" timestamp does **not**; it would be one write per
    press forever.
@@ -211,12 +211,12 @@ Ask, in order:
    outage runs long or a deliberate reset is imminent.
 
 If a value seems to need Tier 2 but changes on a schedule, the answer is not a
-faster flash write — it is to keep it in RAM and persist only the transition
+faster flash write: it is to keep it in RAM and persist only the transition
 that actually matters.
 
 ---
 
-## Tier 2 — `state.json`
+## Tier 2 - `state.json`
 
 ### Schema
 
@@ -248,7 +248,7 @@ state_set(key, value)           # write only if the value actually changed
 `state_set` compares against the in-RAM mirror before writing. Because that
 mirror is loaded from flash and only mutated through `state_set`, the
 comparison **is** the read-before-write check. Setting an unchanged value costs
-no erase, so callers may set defensively — `state_set('chatId', x)` on every
+no erase, so callers may set defensively - `state_set('chatId', x)` on every
 API error is safe.
 
 ### Atomicity
@@ -262,7 +262,7 @@ rename never happened, so `state.json` is still the last good copy; the scrap
 is discarded and logged.
 
 > **Filesystem confirmed.** `os.statvfs('/')` on the bench unit at v1.23.0 returns
-> 4096-byte blocks, 212 total, 202 free — a block size matching the flash sector,
+> 4096-byte blocks, 212 total, 202 free: a block size matching the flash sector,
 > characteristic of littlefs2, which the rp2 port has defaulted to for many
 > releases. The atomic-rename guarantee holds.
 >
@@ -275,7 +275,7 @@ is discarded and logged.
 | --- | --- | --- | --- |
 | No file | Defaults | enabled | First boot |
 | Invalid JSON | Defaults | enabled | Garbage carries nothing worth protecting |
-| Valid JSON, wrong shape | Defaults | enabled | Same — nothing to preserve |
+| Valid JSON, wrong shape | Defaults | enabled | Same: nothing to preserve |
 | `v` > `STATE_VERSION` | Defaults | **disabled** | Written by newer firmware after a rollback; the data may matter |
 | `v` ≤ `STATE_VERSION` | Migrated | enabled | Missing keys filled from defaults |
 
@@ -290,7 +290,7 @@ cannot permanently wedge persistence.
 3. Add a migration step in `migrate_state()`, oldest first.
 
 Fields absent from an older file are filled from defaults automatically, so a
-purely additive change often needs no migration body — but still bump the
+purely additive change often needs no migration body, but still bump the
 version, so a downgraded build recognises the file as newer and leaves it
 alone.
 
@@ -303,8 +303,8 @@ per-revision files in `boards/`:
 
 | File | Board |
 | --- | --- |
-| `boards/board_v1_2.py` | Production carrier, revision V1.2 — doorbell input on GP16 |
-| `boards/board_prototype.py` | Bench prototype — doorbell input on GP18 |
+| `boards/board_v1_2.py` | Production carrier, revision V1.2: doorbell input on GP16 |
+| `boards/board_prototype.py` | Bench prototype: doorbell input on GP18 |
 
 `main.py` holds **no pin defaults**. It imports `board`, checks every name in
 `REQUIRED_BOARD_PINS` is present, and raises otherwise.
@@ -316,7 +316,7 @@ something that looks alive but is not is precisely the silent failure this
 firmware exists to eliminate, so an incomplete install stops at import with a
 message naming what is missing.
 
-This costs the LED as a signal — the failure happens before `setup_hardware()`
+This costs the LED as a signal: the failure happens before `setup_hardware()`
 runs, so the only output is on serial. That is the right trade: the situation only
 arises during installation, when a console is attached anyway.
 
@@ -330,7 +330,7 @@ a fallback would reintroduce the ambiguity the file exists to remove.
 
 Add `boards/board_<revision>.py` and copy it to the device as `board.py`. Keeping
 superseded revisions in the repo documents the hardware history and keeps older
-boards runnable on current firmware. Name files by **revision**, not by role —
+boards runnable on current firmware. Name files by **revision**, not by role -
 "prototype" and "production" describe jobs that move between boards, while a
 revision number does not.
 
@@ -343,14 +343,14 @@ revision number does not.
 | Stage | Function | On failure |
 | --- | --- | --- |
 | 0. Diagnosis | `read_reset_info()` | Cannot fail; every read is guarded |
-| 1. Hardware | `setup_hardware()` | `error_halt()` — fast LED blink, forever |
+| 1. Hardware | `setup_hardware()` | `error_halt()`: fast LED blink, forever |
 | 2. Flash | `load_state()` | Log, fall back to defaults, continue |
 | 3. Network | `connect_wifi()` + `announce_startup()` | Log, continue; the main loop retries |
 
 ### Why the order matters
 
 Previously `connect_wifi()` ran at module scope, outside any `try`, and sent the
-startup message immediately after association — precisely when DNS is least
+startup message immediately after association: precisely when DNS is least
 likely to be ready. If that send raised, the script died before
 `machine.Pin(16)` was ever reached. The doorbell input was never configured and
 the device was dead until someone power-cycled it, with no watchdog to notice.
@@ -361,7 +361,7 @@ are latched by the IRQ and delivered when the link returns.
 
 ### Fatal versus recoverable
 
-Only stage 1 is fatal, and in practice it fails only on a bad pin number — a
+Only stage 1 is fatal, and in practice it fails only on a bad pin number: a
 configuration error a human must fix. `error_halt()` therefore blinks rather
 than resetting: a reset loop would hide the fault. When B2 adds the watchdog,
 this becomes a deliberate escalation point.
@@ -380,16 +380,16 @@ connecting is a later stage.
 
 `connect_wifi()` connects. `announce_startup()` notifies. They used to be one
 function, which meant a transport failure looked like a connection failure and
-took the boot down with it. Callers now decide whether to announce — the main
+took the boot down with it. Callers now decide whether to announce: the main
 loop does so after a reconnect, `boot()` after the first connect.
 
 ---
 
-## Tier 1 — reset diagnosis
+## Tier 1: reset diagnosis
 
 The production unit reboots intermittently, correlated with switching mains
 loads on the same circuit. The cause is unresolved. Every restart used to look
-identical — a startup message in Telegram — which conflates a supply brownout, a
+identical, a startup message in Telegram, which conflates a supply brownout, a
 spurious hard reset, and a firmware crash.
 
 Three signals are read at boot. Bench testing then established that only two of
@@ -399,8 +399,8 @@ them are worth believing.
 | --- | --- | --- |
 | `CHIP_RESET` register | `POR/BOD` = supply, `RUN` = pin pulled low | ✅ Confirmed on hardware |
 | Scratch magic word | Present = no hardware reset occurred | ✅ Confirmed on hardware |
-| `machine.reset_cause()` | — | ❌ **Unreliable on rp2. Advisory only.** |
-| `WATCHDOG_REASON` | — | ❌ Polluted by the bootrom. Advisory only. |
+| `machine.reset_cause()` | - | ❌ **Unreliable on rp2. Advisory only.** |
+| `WATCHDOG_REASON` | - | ❌ Polluted by the bootrom. Advisory only. |
 
 ### `reset_cause()` cannot be trusted here
 
@@ -412,11 +412,11 @@ Observed on the bench unit, same board, minutes apart:
 
 | Actual event | `reset_cause()` said | `CHIP_RESET` said |
 | --- | --- | --- |
-| Soft reboot after a power-up | `WDT_RESET` | `0x00000100` — POR ✅ |
-| RUN pin pressed | `PWRON_RESET` | `0x00010000` — RUN ✅ |
+| Soft reboot after a power-up | `WDT_RESET` | `0x00000100`: POR ✅ |
+| RUN pin pressed | `PWRON_RESET` | `0x00010000`: RUN ✅ |
 
 Wrong both times, in different directions. Both values are still logged, in
-brackets, because they cost nothing and occasionally corroborate — but nothing
+brackets, because they cost nothing and occasionally corroborate, but nothing
 branches on them. Reading three independent signals is what made this visible;
 a single-source implementation would have reported confident nonsense.
 
@@ -426,14 +426,14 @@ a single-source implementation would have reported confident nonsense.
 - **The flags do not accumulate.** A RUN reset following a power-up reads
   `0x00010000`, not `0x00010100`. Each reset reports only its own cause, so
   `CHIP_RESET` never needs clearing.
-- **Any hardware reset clears the scratch area, RUN included** — not only power
+- **Any hardware reset clears the scratch area, RUN included**, not only power
   loss, as first assumed.
 
 That last point yields the decision rule:
 
 | Scratch | Meaning |
 | --- | --- |
-| Cleared (`cold`) | A real hardware reset happened — trust `CHIP_RESET` |
+| Cleared (`cold`) | A real hardware reset happened: trust `CHIP_RESET` |
 | Intact (`warm`) | No hardware reset: soft reboot, or a watchdog bite once B2 lands. **`CHIP_RESET` is stale**, and is labelled `chip(stale)=` in the log |
 
 ### Confirmed boot matrix
@@ -455,7 +455,7 @@ Every path verified on the bench unit:
 > the next boot onward, and only ever affects the first boot after a flash.
 
 > Because any hardware reset clears the scratch area, a boot counter kept there
-> reported `boot #1` after every power cycle and every RUN reset — useless for a
+> reported `boot #1` after every power cycle and every RUN reset: useless for a
 > reboot investigation that is entirely about power and RUN events. The running
 > total therefore lives in flash; see *Counting boots* below.
 
@@ -481,13 +481,13 @@ on confirmation.**
 
 The announcement matters more than it looks: it carries the reset diagnosis, so
 losing it to a momentary outage would quietly cost the reboot investigation its
-data. It was previously sent once and forgotten — a regression that surfaced when
+data. It was previously sent once and forgotten: a regression that surfaced when
 the backlog fetch below started arming the backoff before it.
 
 ### The update backlog is discarded at boot
 
 `updateId` lives in RAM, so every reset restarts it at zero and `getUpdates`
-replays whatever Telegram has been holding — re-executing commands sent up to 24
+replays whatever Telegram has been holding: re-executing commands sent up to 24
 hours earlier. Observed: a `/log` answered again after every reboot.
 
 `discard_update_backlog()` fetches with `offset=-1` and acknowledges the last
@@ -508,7 +508,7 @@ investigation. The write is safe because it happens **once per boot, and only
 after the device has been up for 60 seconds**.
 
 That gate is doing real work. A boot loop resetting every five seconds would be
-17,000 writes a day and a dead sector inside a week — the "never write on a
+17,000 writes a day and a dead sector inside a week: the "never write on a
 timer" rule broken by accident rather than design. A looping device never reaches
 60 seconds, so it never writes at all.
 
@@ -552,8 +552,8 @@ left `boots` at 2, and both attempts reported `boot #3`, the second with
 | `0x40058018` | `WATCHDOG.SCRATCH3` | Boot counter |
 | `0x40064008` | `VREG_AND_CHIP_RESET.CHIP_RESET` | Hardware reset record |
 
-Scratch registers 4–7 carry the bootrom's reboot-to-BOOTSEL handshake, so only
-0–3 are safe. 2 and 3 are used, leaving 0 and 1 alone in case the port wants
+Scratch registers 4-7 carry the bootrom's reboot-to-BOOTSEL handshake, so only
+0-3 are safe. 2 and 3 are used, leaving 0 and 1 alone in case the port wants
 them.
 
 ### Why this had to land before the watchdog
@@ -579,7 +579,7 @@ whether a ring happened; it only drains what the interrupt already recorded.
 
 The old loop read the pin once a second, but the same loop made blocking TLS
 calls of one to two seconds and slept five seconds after every press. A ring
-landing in one of those windows was lost, and lost **silently** — the physical
+landing in one of those windows was lost, and lost **silently**: the physical
 chime still sounds, so nobody can report a notification that never arrived.
 
 ### Both edges, on purpose
@@ -587,8 +587,8 @@ chime still sounds, so nobody can report a notification that never arrived.
 The handler watches rising *and* falling edges, so the pulse width is recorded in
 hardware.
 
-The obvious alternative — latch the rising edge, then re-read the pin a moment
-later to confirm it is still high — fails in exactly the case that matters. If
+The obvious alternative, latching the rising edge and re-reading the pin a moment
+later to confirm it is still high, fails in exactly the case that matters. If
 the loop was blocked in a handshake for four seconds, the 2 s pulse is long over
 and the pin is back at ground. A real ring would be discarded as noise. Capturing
 the falling edge means the width is known however late the loop gets there.
@@ -608,8 +608,8 @@ width and sat there until the 15 s stuck timeout. On the bench, a very short tap
 produced complete silence.
 
 **Second attempt:** accept every falling edge immediately. That broke the case
-that matters far more. Closing a contact chatters — high, low, high, low over a
-few milliseconds before settling — so the *first* fall is part of the make, not
+that matters far more. Closing a contact chatters: high, low, high, low over a
+few milliseconds before settling, so the *first* fall is part of the make, not
 the release. The pulse closed 2 ms in, was judged a transient on those 2 ms, and
 the genuine four-second press that followed was discarded. Observed on the bench
 as `transient ignored, 2ms` for a long, deliberate press.
@@ -623,7 +623,7 @@ as the transient it is.
 
 ### Interrupt discipline
 
-The handler stamps two integers and returns. No allocation, no I/O, no logging —
+The handler stamps two integers and returns. No allocation, no I/O, no logging -
 MicroPython forbids allocation in an ISR. Input records are plain lists built once
 at setup, because assigning to an existing list slot allocates nothing.
 
@@ -645,11 +645,11 @@ has not ruled out EMI coupling into this installation, and a bare edge trigger
 would turn an injected transient into a phantom notification.
 
 > **Do not tune this on bench data.** Widths measured by hand on a bench supply
-> (114–357 ms for taps, 1001–8176 ms for presses) describe a wire being touched,
+> (114-357 ms for taps, 1001-8176 ms for presses) describe a wire being touched,
 > not terminal 04. The open question is whether the TwinBus latches its own ~2 s
 > signal regardless of how briefly the visitor presses, or tracks the button. If
 > it tracks the button, a quick jab could produce a 300 ms pulse and a threshold
-> raised to 400 ms would silently reject a real ring — the exact failure this
+> raised to 400 ms would silently reject a real ring: the exact failure this
 > project exists to prevent, reintroduced by tuning against the wrong signal.
 >
 > Settle it by jabbing the real doorbell as briefly as possible and reading the
@@ -660,7 +660,7 @@ would turn an injected transient into a phantom notification.
 
 `log += entry` reallocates the whole buffer on every append. A few hundred
 appends during an outage means a few hundred multi-kilobyte allocations and
-frees on a 264 KB heap, and TLS handshakes need large contiguous blocks — so the
+frees on a 264 KB heap, and TLS handshakes need large contiguous blocks, so the
 symptom is **sends beginning to fail while everything small still works**.
 
 That is what a ten-minute bench outage produced: hundreds of appends, then every
@@ -668,7 +668,7 @@ send failing, correlated with the log filling. `logLines` is bounded by count an
 appends a short string each time; nothing large is reallocated.
 
 > This is the leading explanation for that failure, not a proven one. The
-> alternative — a cyw43 stack wedged by repeated `connect()` calls — is addressed
+> alternative, a cyw43 stack wedged by repeated `connect()` calls, is addressed
 > separately under *Reconnection*. Both fixes are worth having; the next
 > occurrence will show which mattered, because the errno is now printed.
 
@@ -679,7 +679,7 @@ the console, which is backwards for diagnosis and cost a session.
 ### `/log` is chunked
 
 Telegram caps a message at 4096 characters. The log was allowed to reach 10000,
-so a full log was an unconditional 400 — and the old code then cleared it anyway,
+so a full log was an unconditional 400, and the old code then cleared it anyway,
 destroying exactly what had just failed to send.
 
 `print_log()` now splits on line boundaries under the limit, sends each piece,
@@ -689,7 +689,7 @@ early on and stopped once the log filled.
 ### Saying things out loud
 
 `report()` prints and logs. Several events that only matter while someone is
-watching — ring widths, rejected transients, the stability write — were written
+watching, such as ring widths, rejected transients and the stability write, were written
 to the in-memory log alone and were invisible on the console. `append_to_log()`
 remains for things nobody needs to watch happen.
 
@@ -702,7 +702,7 @@ estimate with a measurement.
 
 ### One input, structured for two
 
-`inputs` is a list of records and G9 would add an entry, not a rewrite — but only
+`inputs` is a list of records and G9 would add an entry, not a rewrite, but only
 the doorbell is wired today.
 
 ---
@@ -714,7 +714,7 @@ The device reports in every six hours, and on demand via `/status`.
 ### Why
 
 Its only sign of life used to be `Checking for new messages...` printed once a
-minute — a line that says nothing, that nobody watches, and that made silence and
+minute: a line that says nothing, that nobody watches, and that made silence and
 death indistinguishable. It is now log-only, so a long run's console shows events
 rather than a metronome.
 
@@ -722,7 +722,7 @@ Free memory is the figure that matters most, because the socket-leak fix in
 `do_request` can be proven no other way: a single reading says nothing, only a
 flat trend over days does. Reading it by hand meant killing the run to reach a
 REPL, which the watchdog then reset out from under you. The heartbeat removes
-that trade entirely — a soak now measures itself.
+that trade entirely: a soak now measures itself.
 
 ### Contents
 
@@ -740,7 +740,7 @@ device runs.
 ### Delivery
 
 Routed through `pendingAnnouncement`, so a failed heartbeat is retried rather
-than dropped — a missing "still alive" message is exactly what a dead device
+than dropped: a missing "still alive" message is exactly what a dead device
 looks like. If that slot already holds a startup report, the heartbeat yields:
 the boot diagnosis matters more, and the next one is only hours away.
 
@@ -750,7 +750,7 @@ the boot diagnosis matters more, and the next one is only hours away.
 
 A ring detected during a network outage used to be logged and then lost. Observed
 on the bench: `Doorbell ring, 202ms`, then `WiFi is disconnected.`, and no message
-ever arrived — detected, measured, counted, and gone, with no crash and no error.
+ever arrived: detected, measured, counted, and gone, with no crash and no error.
 
 Rings now wait in a queue until Telegram confirms delivery.
 
@@ -765,7 +765,7 @@ ring must not block every ring behind it.
 
 The queue exists to survive a *network* outage, which RAM covers completely.
 Flash only helps across a reset, so it is written **only once an outage has
-already run for five minutes** — long enough that a reset in the middle is a real
+already run for five minutes**: long enough that a reset in the middle is a real
 possibility. A brief outage never writes at all.
 
 | Constant | Value | Purpose |
@@ -799,12 +799,12 @@ timestamp with no schema change.
 ## Reconnection
 
 One `connect()` is issued, then given 30 seconds to work before another is tried.
-After 20 attempts — roughly ten minutes — the board resets itself.
+After 20 attempts (roughly ten minutes) the board resets itself.
 
 ### WiFi power save is off
 
 The CYW43439 defaults to sleeping between beacons, which adds latency and drops
-packets — the standard explanation for the timeouts an always-on device sees.
+packets: the standard explanation for the timeouts an always-on device sees.
 `wlan.config(pm=...)` disables it, applied before connecting since the setting
 affects the association.
 
@@ -823,7 +823,7 @@ answers the door.
 
 | Code | Meaning | Re-issue? |
 | --- | --- | --- |
-| `1`, `2` | Joining, or associated and awaiting DHCP | **No** — wait up to 20 s |
+| `1`, `2` | Joining, or associated and awaiting DHCP | **No**: wait up to 20 s |
 | `0`, `-1`, `-2`, `-3` | Idle, link failed, no AP, auth rejected | Yes, after 10 s |
 | `3` | Connected | Done |
 
@@ -843,7 +843,7 @@ inverted that, and a test caught it.
 
 MicroPython exposes no `STAT_` constant for 2, and names `-3`
 `STAT_WRONG_PASSWORD` even though cyw43 reports it for any association
-rejection — MAC filtering or an AP block included. Both were misleading in the
+rejection: MAC filtering or an AP block included. Both were misleading in the
 logs, so the firmware carries its own names.
 
 ### Why not just retry
@@ -855,7 +855,7 @@ returned 3, the IP printed, and every send failed. Re-issuing a connect while on
 is already in flight is a known way to wedge the cyw43 stack.
 
 A wedged stack is also why the attempt count ends in a reset rather than more
-retrying. Resetting cannot fix an absent router — but by that point an absent
+retrying. Resetting cannot fix an absent router, but by that point an absent
 router is no longer the likeliest explanation, and a reset is the only thing that
 clears a wedged driver.
 
@@ -863,7 +863,7 @@ clears a wedged driver.
 
 `wlan.status()` reporting a connection is not evidence that traffic flows.
 Reproduced on the bench: after the AP rejected the board for a few minutes, it
-re-associated — status 3, IP printed — and every DNS lookup then returned `-2`,
+re-associated (status 3, IP printed) and every DNS lookup then returned `-2`,
 indefinitely. The same signature had appeared once before after a ten-minute
 outage.
 
@@ -873,7 +873,7 @@ up and passes nothing is worse than one that admits it is down, because nothing
 notices.**
 
 `note_request_result()` counts consecutive transport failures. A `REQUEST_FATAL`
-does not count — Telegram answered, so the link is fine. Failures also back off,
+does not count: Telegram answered, so the link is fine. Failures also back off,
 doubling from 5 s to a 60 s cap; without it a long outage burns hundreds of DNS
 lookups an hour and floods the log.
 
@@ -893,12 +893,12 @@ never attempted is evidence of nothing.**
 
 | Time since the last successful request, while associated | Action |
 | --- | --- |
-| `NETWORK_DEAD_MS` (2 min) | **Bounce the link** — `disconnect()`, then reconnect |
+| `NETWORK_DEAD_MS` (5 min) | **Bounce the link**: `disconnect()`, then reconnect |
 | Another `NETWORK_DEAD_MS` after that | **Reset** |
 
 > **Five minutes, and deliberately generous.** An associated-but-dead link
 > recovered on its own after about seven minutes on the bench, with no
-> intervention — a wedged driver does not do that, so the cause was upstream.
+> intervention: a wedged driver does not do that, so the cause was upstream.
 > Bouncing at two minutes would have discarded a working association several
 > minutes before the network returned, and reassociating on that router took 28
 > attempts. Nothing is lost by waiting, because the queue holds the ring, while
@@ -906,14 +906,14 @@ never attempted is evidence of nothing.**
 
 > **Elapsed time, not a failure count.** The first version counted fifteen
 > consecutive failures. Backoff stretches a count into an unpredictable
-> duration — fifteen worked out at roughly twelve minutes, and on the bench the
+> duration: fifteen worked out at roughly twelve minutes, and on the bench the
 > AP deauthenticated the board long before that, which made
 > `is_wifi_connected()` false and left the whole detection path unreachable. A
 > deadline says what was meant.
 
 The bounce comes first because the firmware **cannot tell a wedged local stack
 from an upstream block**. A router that filters a device while leaving
-association and DHCP intact produces an identical symptom — and that is exactly
+association and DHCP intact produces an identical symptom, and that is exactly
 what happened during testing, which is why the wedged-stack reading here is
 uncertain. Resetting cannot fix an upstream block; repeating it every few minutes
 through an ISP outage would be pure churn, and each reset destroys the RAM log.
@@ -929,7 +929,7 @@ there would be re-entrant.
 > log string was first: it predicted the failure would stop once the log became a
 > list, and it did not. A wedged cyw43 stack was second: it predicted the state
 > would persist until something cleared it, and instead the link recovered on its
-> own after roughly seven minutes. What remains is an upstream block — the router
+> own after roughly seven minutes. What remains is an upstream block: the router
 > holding a device restriction for some time after it is lifted.
 >
 > The escalation stays, because a genuinely wedged stack is still possible and the
@@ -943,19 +943,19 @@ an AP that keeps rejecting the board produces a reset every few minutes, and eac
 one destroys the log explaining why.
 
 `self_reset()` therefore writes a short code to scratch 0, and the next boot
-reports it — `reason=WiFi_unreachable` or `reason=network_dead_after_a_bounce` in
+reports it - `reason=WiFi_unreachable` or `reason=network_dead_after_a_bounce` in
 the summary. One fact, carried across, at no cost in flash.
 
 ### Self-inflicted resets are marked
 
 `self_reset()` writes a marker to scratch 1 before resetting, so the next boot
 reports `verdict=self-reset` rather than `warm-reset`. Without it, the firmware's
-own reset would be indistinguishable from a watchdog bite — both are warm with no
-`CHIP_RESET` flags — and would pollute the reboot dataset.
+own reset would be indistinguishable from a watchdog bite: both are warm with no
+`CHIP_RESET` flags, and would pollute the reboot dataset.
 
 It also snapshots the queue first, so undelivered rings survive.
 
-> **Unverified:** scratch 0 and 1 are believed unused by the port. Only 4–7 are
+> **Unverified:** scratch 0 and 1 are believed unused by the port. Only 4-7 are
 > documented as taken by the bootrom.
 
 ### The queue is persisted during an outage
@@ -983,8 +983,8 @@ The chip's ceiling is roughly 8.3 s. Measured worst case for one loop pass:
 | `loopDelay` | 1 s |
 
 That fits, but not by enough to trust on a bad day. So the watchdog is fed from
-**inside** the blocking work — before and after every request, after the flash
-write, and in slices during every wait — rather than only at the top of the loop.
+**inside** the blocking work: before and after every request, after the flash
+write, and in slices during every wait: rather than only at the top of the loop.
 
 **B1 was a prerequisite.** With its 5 s post-press sleep still in place, a ring
 followed by a `getUpdates` could pass nine seconds with no feed, and the watchdog
@@ -998,8 +998,8 @@ would have turned every transient fault into a reboot. `sleep_fed()` breaks wait
 into 500 ms slices and feeds between them.
 
 A test walks the AST and fails if any raw `time.sleep()` with a constant argument
-of 8 s or more survives. The short ones that remain — LED blinks, and
-`error_halt()` — are either brief or run before the watchdog is armed.
+of 8 s or more survives. The short ones that remain: LED blinks, and
+`error_halt()`: are either brief or run before the watchdog is armed.
 
 ### When it is armed
 
@@ -1011,7 +1011,7 @@ After hardware and state are up, before networking. Two reasons:
   would convert a visible configuration fault into a silent reset loop.
 
 `connect_wifi()` feeds while retrying, so a genuinely unreachable router does not
-cause a reset — resetting would not fix it. The watchdog is for a wedged stack,
+cause a reset: resetting would not fix it. The watchdog is for a wedged stack,
 not an absent network.
 
 ### If the watchdog cannot be created
@@ -1022,9 +1022,9 @@ refuses to start does not.
 ### Consequence on the bench
 
 Ctrl-C leaves the main loop, so nothing feeds, and the board resets a few seconds
-later. That is correct in service — an exited loop is a dead doorbell — but it
+later. That is correct in service (an exited loop is a dead doorbell) but it
 means development interruptions now produce a reset, reported as `watchdog` on
-the next boot — a real timeout, since nothing feeds once the loop has exited.
+the next boot: a real timeout, since nothing feeds once the loop has exited.
 The firmware says so on the way out.
 
 ---
@@ -1050,13 +1050,13 @@ outcome, status, body = do_request(method, url, payload=None)
 | `REQUEST_RETRY` | Network fault, 5xx, or no response at all | retry with backoff |
 | `REQUEST_RATE_LIMIT` | 429 | wait `retry_after(body)` seconds, then retry |
 | `REQUEST_FATAL` | Other 4xx | log and give up; retrying will not help |
-| `REQUEST_SKIPPED` | Never attempted — backoff, or the link is down | wait; this is evidence of nothing |
+| `REQUEST_SKIPPED` | Never attempted: backoff, or the link is down | wait; this is evidence of nothing |
 
 ### The timeout cannot fully prevent a watchdog reset
 
 `timeout` applies **per socket operation**, not per request. DNS, connect, the
 TLS handshake and the read each get their own budget, so a request can outlast
-the 8 s watchdog even with a timeout set — observed on the bench as a reset
+the 8 s watchdog even with a timeout set: observed on the bench as a reset
 landing immediately after `HTTP GET failed: ETIMEDOUT`.
 
 There is no headroom on the other side: the RP2040 caps the watchdog near 8.3 s,
@@ -1065,7 +1065,7 @@ and feeding from a timer during a request would defeat the point of having one.
 
 The timeout stays at **5 s**. Three was tried after a run of `ETIMEDOUT`
 failures, but those were most likely the inter-VLAN hop and WiFi power save
-rather than anything a timeout could fix — both since removed. Tuning against a
+rather than anything a timeout could fix: both since removed. Tuning against a
 problem that is being eliminated leaves a margin tighter than the hardware needs
 and turns healthy-but-slow requests into retries.
 
@@ -1080,7 +1080,7 @@ is the RAM log.
 
 Two guards, because the failure was observed twice on hardware: WiFi vanished
 while a request was in flight, `urequests` blocked with no timeout, and the
-watchdog reset the board — once during a send, losing the ring, and once during
+watchdog reset the board: once during a send, losing the ring, and once during
 `getUpdates`.
 
 1. **Pre-flight check.** `do_request` returns `REQUEST_RETRY` without opening a
@@ -1093,12 +1093,12 @@ watchdog reset the board — once during a send, losing the ring, and once durin
 
 Neither is complete. A network that disappears mid-handshake, or a `getaddrinfo`
 that blocks, can still exceed the timeout, and **the watchdog remains the final
-backstop**. That is the correct order of defences — but a reset should be the
+backstop**. That is the correct order of defences, but a reset should be the
 last resort, not the routine response to a flaky router.
 
 ### Why this shape
 
-`urequests` **does not raise on 4xx** — it returns a response object carrying
+`urequests` **does not raise on 4xx**: it returns a response object carrying
 the error status. Before this layer existed, every API failure was invisible:
 the firmware printed `Doorbell pressed!` and carried on believing it had
 delivered the notification. Status classification is what turns that into an
@@ -1127,8 +1127,23 @@ details are read.
 | `state.json.tmp` | Transient. Present only mid-write, or as a crash remnant. |
 
 `secrets.py` and `state.json` are deliberately separate. Runtime state must
-never be written into a file the user also edits by hand — that invites a merge
+never be written into a file the user also edits by hand: that invites a merge
 conflict on a microcontroller, and makes credential rotation destructive.
+
+---
+
+## Writing conventions
+
+No em-dash or en-dash, **anywhere**: code, comments, docs, commit messages. Use a
+comma, colon, semicolon, parentheses, or two sentences. A hyphen in a compound
+word is fine.
+
+The point is not the character but the construction. Substituting a spaced hyphen
+for a dash keeps the habit and only changes its spelling, so a spaced hyphen in
+prose counts as a violation too. `tools/check.py` enforces both.
+
+`ROADMAP.md` item headings use a colon (`### C7: Title`) because
+`check_roadmap.py` matches on that separator.
 
 ---
 
@@ -1141,17 +1156,17 @@ files and partial schemas. It runs under CPython with no board attached.
 
 `tests/test_reset.py` covers reset diagnosis: cold versus warm boot, the counter
 surviving a warm reset and restarting after a hardware one, stale-flag handling,
-unknown cause codes, and the verdicts — using the exact values the bench unit
+unknown cause codes, and the verdicts: using the exact values the bench unit
 reported, including the two cases where `reset_cause()` disagreed with the
 hardware. 35 assertions.
 
 `tests/test_boot.py` runs `main.py` under stub hardware modules and asserts the
 boot ordering: that the doorbell pin is configured before any network call, and
 that a failing startup send no longer prevents it. The baseline firmware fails
-this test — it dies with `OSError` and never reaches `machine.Pin(16)`.
+this test: it dies with `OSError` and never reaches `machine.Pin(16)`.
 
 Both files work by extracting code from `main.py` via AST and running it in a
-synthetic namespace — possible only because those functions depend on
+synthetic namespace: possible only because those functions depend on
 nothing but `json` and `os`, and because the trailing `while True:` loop can be
 stripped from the tree before executing it. **This is temporary scaffolding.**
 Once the code is split into modules, both files should be rewritten as plain
