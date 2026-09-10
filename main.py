@@ -87,16 +87,16 @@ doorBellPin = board.doorBellPin
 # tradeoff inverts and a few dropped packets are cheaper than the current draw.
 wifiPowerSave = getattr(board, 'wifiPowerSave', False)
 
-# C1: seconds to add to UTC for displayed timestamps. NTP is UTC, but an
-# incident report is read in local time, so the offset is applied at
-# formatting only: the stored anchor stays UTC, which keeps arithmetic and
-# any future timezone change trivial. Optional and defaulted like
-# wifiPowerSave, so a board.py without it keeps working (and shows UTC).
-# Berlin is +3600 (CET) or +7200 (CEST); a fixed number here does not follow
-# daylight saving, which is a deliberate limit recorded in the roadmap, not
-# an oversight. A whole-clock error is obvious; a one-hour DST skew is the
-# kind of quiet wrongness worth avoiding, so the display is tagged with the
-# offset it used.
+# C1: seconds to add to UTC for displayed timestamps. Defaults to 0, so the
+# device shows and logs UTC unless a board.py opts into an offset. UTC is the
+# deliberate default: NTP only ever yields UTC, the conversion to local time
+# is the client's job, and a fixed offset here cannot follow daylight saving,
+# so it would be silently an hour wrong for months of the year. On a resource
+# constrained part with no timezone database, and for an open project run in
+# many zones, one unambiguous clock everywhere beats a local one that drifts.
+# The field remains an escape hatch for a fixed-offset install that wants it;
+# every timestamp is tagged with the offset it used (for example +0000) so any
+# such choice stays visible rather than silent.
 utcOffset = getattr(board, 'utcOffset', 0)
 
 # Newer builds name this; older ones only take the magic number.
@@ -1889,61 +1889,67 @@ def boot():
         append_to_log('Startup networking failed: ' + str(e))
         print('Startup networking failed: ' + str(e))
 
-boot()
+# Entry-point guard. On the device main.py is __main__, so boot() runs and
+# the loop starts exactly as before. Under the test harness main.py is
+# imported, not run, so __name__ is 'main' and neither fires: the tests get
+# every function and module global without boot() doing real work or the
+# loop never returning. This is what lets the suites use `import main`
+# instead of AST-stripping the loop out, and what makes the E2 split safe.
+if __name__ == '__main__':
+    boot()
 
-while True:
-    try:
-        if (not is_wifi_connected()):
-            connect_wifi()
-            announce_startup()
-        
-        if networkBounceRequested:
-            bounce_wifi()
+    while True:
+        try:
+            if (not is_wifi_connected()):
+                connect_wifi()
+                announce_startup()
 
-        poll_inputs()
-        flush_announcement()
-        flush_queue()
-        maybe_snapshot_queue()
-        
-        # Check for new messages
-        if (time.ticks_diff(time.ticks_ms(), lastLogCheck) > logCheckInterval):
-            # Log only. Printed once a minute it was pure noise, and it
-            # crowded out the events worth seeing in a long run.
-            append_to_log('Checking for new messages')
-            read_message(chatId)
-            lastLogCheck = time.ticks_ms()
-        
-        mark_boot_stable()
-        feed_watchdog()
+            if networkBounceRequested:
+                bounce_wifi()
 
-        # Record when this pass ran, so was_unpollable() can tell whether a
-        # ring landed in a gap the old polling loop could not have covered.
-        prevPassTicks = lastPassTicks
-        lastPassTicks = time.ticks_ms()
-        uptimeMs += time.ticks_diff(lastPassTicks, prevPassTicks)
-        maybe_resync_clock()
-        maybe_heartbeat()
+            poll_inputs()
+            flush_announcement()
+            flush_queue()
+            maybe_snapshot_queue()
 
-        sleep_fed(loopDelay)
-        
-    
-    except KeyboardInterrupt:
-        print('KeyboardInterrupt')
-        if wdt is not None:
-            # Nothing can disarm an RP2040 watchdog. Leaving the loop stops
-            # the feeding, so the board resets shortly. That is correct in
-            # service -- an exited loop is a dead doorbell -- but it is worth
-            # saying out loud on the bench.
-            print('Watchdog is armed: expect a reset within ' +
-                  str(WDT_TIMEOUT_MS // 1000) + 's')
-        break
-    except Exception as e:
-        print(e)
-        led.off()
-        wlan.disconnect()
-        append_to_log('WiFi disconnected: ' + str(e))
-        # Grace period, in fed slices. Left as a single sleep(10) this
-        # would outlast the watchdog and reset the board on every error.
-        sleep_fed(10)
-        led.on()
-        pass
+            # Check for new messages
+            if (time.ticks_diff(time.ticks_ms(), lastLogCheck) > logCheckInterval):
+                # Log only. Printed once a minute it was pure noise, and it
+                # crowded out the events worth seeing in a long run.
+                append_to_log('Checking for new messages')
+                read_message(chatId)
+                lastLogCheck = time.ticks_ms()
+
+            mark_boot_stable()
+            feed_watchdog()
+
+            # Record when this pass ran, so was_unpollable() can tell whether
+            # a ring landed in a gap the old polling loop could not have
+            # covered.
+            prevPassTicks = lastPassTicks
+            lastPassTicks = time.ticks_ms()
+            uptimeMs += time.ticks_diff(lastPassTicks, prevPassTicks)
+            maybe_resync_clock()
+            maybe_heartbeat()
+
+            sleep_fed(loopDelay)
+
+        except KeyboardInterrupt:
+            print('KeyboardInterrupt')
+            if wdt is not None:
+                # Nothing can disarm an RP2040 watchdog. Leaving the loop
+                # stops the feeding, so the board resets shortly. That is
+                # correct in service (an exited loop is a dead doorbell) but
+                # it is worth saying out loud on the bench.
+                print('Watchdog is armed: expect a reset within ' +
+                      str(WDT_TIMEOUT_MS // 1000) + 's')
+            break
+        except Exception as e:
+            print(e)
+            led.off()
+            wlan.disconnect()
+            append_to_log('WiFi disconnected: ' + str(e))
+            # Grace period, in fed slices. Left as a single sleep(10) this
+            # would outlast the watchdog and reset the board on every error.
+            sleep_fed(10)
+            led.on()
