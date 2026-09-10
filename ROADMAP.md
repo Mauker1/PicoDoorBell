@@ -737,12 +737,28 @@ PEP 8 naming, drop parenthesized conditions, remove dead code (`startupTime`, tr
 
 ## G. Hardware & UX
 
-### G1: LED state machine (P2)
+### 🧪 G1: LED state machine (P2)
+
+> **Still unverified:** implemented and passing on the bench suite
+> (`tests/test_led.py`, 28 assertions), but the patterns have not yet been watched on real
+> hardware. Waiting on a bench flash to confirm the connecting blink, the solid connected
+> level, the ring alert, and that the error blink still escalates through the watchdog.
+
 Distinct patterns for connecting / connected / error / alert-sent.
 
-Fix the inversion: the error handler calls `wlan.disconnect()` and then `led.on()`, leaving
-the "connected" indicator lit on a disconnected device. It is the only local feedback there
-is.
+A single source of truth: the steady state (off, connecting, connected, error) lives in
+`ledState` and is rendered by `set_led_state`; nothing sets a bare level any more. Discrete
+events (the connect confirmation, a delivered ring, the fatal fast blink) are short bursts
+that restore the steady state when they finish. Blink bursts feed the watchdog through
+`sleep_fed`, so a pattern cannot outlast the timeout. The connecting blink is driven by the
+connect loop, which already polls every `WIFI_POLL_MS`, toggling once per pass for a roughly
+1 Hz flash without a timer. `error_halt` keeps its unfed fast blink deliberately: a fatal
+setup fault should let the watchdog escalate rather than be held off forever.
+
+Fixed the inversion: the error handler called `wlan.disconnect()` and then `led.on()`,
+leaving the "connected" indicator lit on a disconnected device. It now sets the off state
+after disconnecting, and the next loop pass drives the LED back through connecting to
+connected on its own.
 
 ### G2: Battery telemetry (P4)
 VSYS via ADC3, with the GPIO25-high sequencing the Pico W requires. Report in the heartbeat,

@@ -785,16 +785,40 @@ can never be mistaken for an absolute one, and a log spanning a sync shows
 exactly where real time began. This is the roadmap's "mark those entries as
 such", made concrete.
 
-### Local time comes from `board.py`
+### UTC, and why not local time
 
-`utcOffset` (seconds, optional, defaulting to UTC) is read exactly as
-`wifiPowerSave` is, and applied at **display time only**: the stored anchor stays
-UTC, which keeps the arithmetic trivial and any future timezone change free. The
-offset is a fixed number and does not follow daylight saving. That is deliberate:
-a whole-clock error is obvious, whereas a one-hour DST skew is quiet enough to
-mislead, so every rendered timestamp is tagged with the offset it used (for
-example `+0100`). A wrong offset is then visible rather than silent, and a
-DST-aware variant can be added later without a schema change.
+The device shows and logs **UTC**. This is a deliberate choice, not a missing
+feature. NTP only ever yields UTC: the protocol has no concept of a timezone,
+and converting to local time is always the client's responsibility. Doing that
+conversion correctly means knowing daylight-saving rules, which differ by region
+and change as governments legislate; the general answer is the IANA timezone
+database, which is far too large for a part with 264 KB of RAM and no filesystem
+room to spare.
+
+The alternatives were weighed and rejected:
+
+- A **fixed offset** cannot follow daylight saving, so it is silently an hour
+  wrong for months of the year. That is worst in exactly the case the clock
+  exists for, an offline history of when rings happened, where the timestamp is
+  the whole point.
+- A **hardcoded DST rule** (for example the EU's) would be correct here and
+  wrong for anyone in another zone. This is an open MIT project whose README
+  documents other people's deployments, and baking one region's rule into shared
+  firmware cuts against the same instinct as the per-revision `board.py`
+  abstraction itself.
+
+UTC sidesteps all of it: one unambiguous instant, identical everywhere, correct
+for every user, needing no maintenance and never drifting. The cost is a mental
+offset when reading one's own logs, which for a diagnostic history read
+deliberately rather than glanced at is a small price.
+
+`utcOffset` (seconds, optional, defaulting to 0) survives as an escape hatch for
+a fixed-offset install that wants one, read exactly as `wifiPowerSave` is and
+applied at display time only so the stored anchor stays UTC. Every rendered
+timestamp is tagged with the offset it used (for example `+0000`), so a
+non-default choice is visible rather than silent. A portable DST-aware variant
+remains possible as a later item, where the per-zone rule problem can be designed
+properly rather than bolted on.
 
 ### Never fatal
 
@@ -1037,6 +1061,43 @@ It also snapshots the queue first, so undelivered rings survive.
 `connect_wifi()` blocks the main loop for the whole outage, so
 `maybe_snapshot_queue()` is called from inside its wait. Otherwise the queue
 would never reach flash during the one situation it exists for.
+
+---
+
+## LED indicator
+
+The onboard LED is the only local feedback the device has, so it must never
+lie. It once did: the main loop's error handler turned the LED on right after
+`wlan.disconnect()`, leaving the "connected" light lit on a board that was in
+fact offline until the next reconnect (G1).
+
+The fix is a single source of truth. The steady state lives in `ledState` and
+is rendered by `set_led_state()`; nothing else sets a level directly.
+
+| State | Meaning | At rest |
+| --- | --- | --- |
+| `LED_OFF` | idle, or disconnected | solid off |
+| `LED_CONNECTING` | a join is under way | poll-driven blink |
+| `LED_CONNECTED` | associated | solid on |
+| `LED_ERROR` | fatal setup fault | fast blink, forever |
+
+Discrete events are short bursts that restore the steady state when they
+finish, so a blink never leaves the LED at the wrong resting level: three
+flashes confirm a connection, a quick double-blink (`led_alert()`) marks a
+delivered ring, once per flush rather than once per ring.
+
+Three constraints shape the mechanism. There is no spare timer wired to the
+LED and it hangs off the CYW43 chip, so there is no interrupt-driven pattern:
+steady states are solid levels, and the connecting blink is driven by the
+connect loop, which already polls every `WIFI_POLL_MS` and toggles once per
+pass for a roughly 1 Hz flash at no cost. Blink bursts feed the watchdog
+through `sleep_fed`, so a pattern cannot outlast the timeout. And `error_halt`
+keeps an unfed fast blink on purpose: a fatal fault should let the watchdog
+escalate, not be held off forever, so it is the one LED path that does not go
+through the fed helper.
+
+Every LED call is wrapped so a failure is swallowed: the indicator is
+feedback, never a reason to fail an operation.
 
 ---
 

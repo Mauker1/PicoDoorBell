@@ -44,6 +44,9 @@ class Pin:
         self.ident = ident
         self.handler = None
         self._level = 0
+        # Ordered record of level changes, so a test can see the pattern a
+        # pin was driven through (used for the LED state machine, G1).
+        self.levels = []
         events.append('pin_%s' % ident)
 
     def irq(self, handler=None, trigger=None):
@@ -51,15 +54,18 @@ class Pin:
         self.trigger = trigger
 
     def on(self):
-        pass
+        self._level = 1
+        self.levels.append(1)
 
     def off(self):
-        pass
+        self._level = 0
+        self.levels.append(0)
 
     def value(self, level=None):
         if level is None:
             return self._level
         self._level = level
+        self.levels.append(level)
 
     def edge(self, level):
         """Drive the pin and fire its interrupt, as the hardware would."""
