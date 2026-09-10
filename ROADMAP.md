@@ -374,13 +374,17 @@ tradeoff.
 
 ## C. Observability
 
-### 🧪 C1: Real timestamps (P1)
+### 🔬 C1: Real timestamps (P1)
 
-> **Still unverified:** implemented and passing on the bench test suite
-> (`tests/test_clock.py`, 34 assertions), but no soak run has yet confirmed a real NTP sync,
-> an unattended resync, or a timestamp surviving the `ticks_ms` wrap. Waiting on a bench run
-> long enough to see one resync (12 h), and on a first sync against a live NTP server rather
-> than the stub.
+> Bench-verified over a clean 23 h soak (boot #34): NTP synced at boot and resynced
+> unattended twice on the 12 h timer, the wall clock stayed coherent across the whole run
+> (per-minute log lines one minute apart for hours), free memory was flat and fully
+> recoverable (147,168 bytes to the byte at 6/12/18 h; the only dips were the bounded log
+> filling, and `/log` clearing it returned the memory), and flash writes stayed flat (one
+> write in 23 h). `tests/test_clock.py` covers the logic in 34 assertions. Not yet on
+> production, held deliberately so the reboot investigation keeps a stable build to reason
+> against. The `ticks_ms` wrap (~12.4 days) is covered by the anchor model and `ticks_diff`
+> in tests rather than by soak, since forcing it needs a two-week run.
 
 NTP sync at boot with periodic resync. Fall back to `ticks_ms` when unsynced and mark those
 entries as such.
@@ -399,12 +403,17 @@ value (for example `t3847221`), so a relative stamp can never be read as an abso
 line after the sync carries a real timestamp, so a log spanning a sync shows exactly where
 real time began.
 
-**Local time from `board.py`.** `utcOffset` (seconds, optional, defaults to UTC) is read the
-same way as `wifiPowerSave` and applied at display time only: the stored anchor stays UTC.
-The offset is a fixed number and does **not** follow daylight saving, which is a deliberate
-limit, not an oversight: a whole-clock error is obvious, whereas a one-hour DST skew is quiet
-enough to mislead, so every timestamp is tagged with the offset it used (for example `+0100`)
-to keep any skew visible. A future item can make it DST-aware without a schema change.
+**UTC, by choice.** NTP only ever yields UTC; converting to local time is always the
+client's job, and there is no timezone database on a part this size. A fixed offset cannot
+follow daylight saving, so it would be silently an hour wrong for months of the year, worst
+in exactly the case the board clock exists for (an offline history of when rings happened).
+The device therefore shows and logs UTC. `utcOffset` (seconds, optional, defaults to 0) is
+read the same way as `wifiPowerSave` and applied at display time only, so the stored anchor
+stays UTC; it remains an escape hatch for a fixed-offset install, and every timestamp is
+tagged with the offset it used (for example `+0000`) so any such choice stays visible. A
+DST-aware, portable variant is possible but was judged not worth the cost here: it needs
+per-zone rules, which is what makes it either large or non-portable. See the note in
+`docs/ARCHITECTURE.md`.
 
 **Never fatal.** NTP sync is best effort, exactly like `announce_startup`: a device with no
 clock still answers the door, an implausible epoch (below a 2020 sanity floor) is rejected
@@ -1123,7 +1132,10 @@ time.
 
 ### Phase 3: Correctness
 
-`A1` · `A2` · `A4` · `C1` · `E1` · `D2` · `D3` · `B5` · `I1` · `H1` · `C6`
+`A1` · `A2` · `A4` · `E1` · `D2` · `D3` · `B5` · `I1` · `H1` · `C6`
+
+`C1` was originally scoped into this phase but was pulled forward and is now bench-verified
+(see its entry above); it is no longer part of the remaining Phase 3 work.
 
 The device already behaves correctly *here*: this deployment uses a channel, which the
 existing parser handles. Most of this phase is **portability**: making it correct for the DM
@@ -1135,11 +1147,12 @@ Suggested order within the phase:
 | --- | --- | --- |
 | Update handling | `A1` · `A2` · `A4` | One rewrite of the parser and dispatch |
 | Configuration | `E1` · `D2` | Both move values out of source; `D2` decides whether `secrets.py` is renamed |
-| Time | `C1` | Unblocks real timestamps in the log and queued rings |
 | Hygiene | `D3` · `B5` · `I1` · `H1` · `C6` | Small, independent |
 
-`C1` is worth doing early in the phase: `ticks_ms` timestamps make every other diagnosis
-harder, and the queue already carries an epoch field waiting for it.
+`C1` (real timestamps) was the one time item here and is already done: it was pulled forward
+because `ticks_ms` timestamps made every other diagnosis harder, and the queue already
+carried an epoch field waiting for it. Its early completion is why this phase is now purely
+update handling, configuration, and hygiene.
 
 ### Phase 4: Polish and roadmap
 
