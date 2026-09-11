@@ -66,6 +66,35 @@ first-run ambiguity, since the magic word had never been written. The dataset st
 The re-plug itself was a calibration event, not a data point: connector travel is mechanical
 and does not happen in service.
 
+**Production setup and observations, dated, so attribution stays honest.**
+
+- A Brennenstuhl surge protector was added to the production USB PSU a few days *before* the
+  firmware upgrade, not at the same time. It therefore predates the current build and is part
+  of the fixed setup the dataset is now collected under.
+- With the surge protector already in place but still on the *old* firmware, the original
+  trigger was actively reproduced: mains loads on the same circuit were switched on and off
+  many times, deliberately. Production did not reboot. This is an active reproduction of the
+  suspected supply/transient fault under the new power conditioning, and it held, which is
+  stronger evidence than passive uptime, though not proof: the original switch correlation
+  was itself informal (recall bias, see below), and there is no negative control run without
+  the protector.
+- After the firmware upgrade, production took one unattended reboot: `boot #6`,
+  `verdict=watchdog wdt=0x1` (TIMER) at ~03:57 CEST, with the surge protector already
+  installed. A surge protector cannot affect a watchdog bite, which is a loop stall, not a
+  supply event, so this reboot is untouched by it. No recurrence in the ~2 days since.
+- The router auto-updated at ~03:40 CEST one night. The bench (a different subnet, behind an
+  inter-VLAN hop) lost its association and correctly announced a reconnect; production held
+  its association throughout, its once-a-minute poll never faltering and no failure lines in
+  the log across the window. Different networks, two truthful outcomes.
+
+**Working reading: two distinct faults, with asymmetric evidence.** A supply/transient fault
+(switch-correlated, would read `verdict=power`) that the surge protector plausibly addressed,
+and a watchdog/stall fault (`verdict=watchdog`, the 03:57 bite) that it cannot touch and that
+still lives in the firmware's request/DNS path. What confirms or refutes each over time: any
+future `verdict=power` reboot means the supply path is not fully solved; any future
+`verdict=watchdog` is the stall fault, unaffected by the power setup, and the one that would
+most benefit from `C1` on production so the next bite is legible against the wall clock.
+
 ### Reading a reboot
 
 | Verdict | Meaning | Next step |
