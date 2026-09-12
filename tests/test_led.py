@@ -45,7 +45,7 @@ def fresh():
     Requests.raise_oserror = False
     m = stubs.load_firmware()
     m.setup_hardware()
-    m.arm_watchdog()
+    m.wdt.arm_watchdog()
     return m
 
 
@@ -132,7 +132,7 @@ WLAN.connected = False
 WLAN.connect_after = 3          # succeeds on the third attempt
 clock[0] = 0
 
-real_sleep_fed = m.sleep_fed
+real_sleep_fed = m.wdt.sleep_fed
 
 
 def ticking_sleep(seconds):
@@ -140,7 +140,7 @@ def ticking_sleep(seconds):
     real_sleep_fed(seconds)
 
 
-m.sleep_fed = ticking_sleep
+m.wdt.sleep_fed = ticking_sleep
 m.led.levels.clear()
 m.connect_wifi()
 check('the LED toggled while connecting', len(m.led.levels) > 1, True)

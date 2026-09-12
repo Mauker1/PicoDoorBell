@@ -59,7 +59,7 @@ check('exactly one watchdog created', len(WDT.instances), 1)
 check('timeout below the 8.3 s ceiling', WDT.instances[0].timeout < 8300, True)
 check('timeout leaves room for two round trips',
       WDT.instances[0].timeout >= 5000, True)
-check('arming twice is a no-op', (m.arm_watchdog(), len(WDT.instances))[1], 1)
+check('arming twice is a no-op', (m.wdt.arm_watchdog(), len(WDT.instances))[1], 1)
 
 # --- 2. Fed around network work --------------------------------------------
 # A handshake can run for seconds; the bite must not land mid-request.
@@ -80,18 +80,18 @@ Requests.raise_oserror = False
 # every error, turning a transient fault into a reboot loop.
 m = fresh()
 before = WDT.instances[0].feeds
-m.sleep_fed(10)
+m.wdt.sleep_fed(10)
 feeds = WDT.instances[0].feeds - before
 check('a 10 s wait feeds many times', feeds >= 20, True)
 check('feeds are spaced under the timeout',
       (10000 / feeds) < m.config.WDT_TIMEOUT_MS, True)
 
 before = WDT.instances[0].feeds
-m.sleep_fed(0.1)
+m.wdt.sleep_fed(0.1)
 check('a short wait still feeds', WDT.instances[0].feeds > before, True)
 
 before = WDT.instances[0].feeds
-m.sleep_fed(0)
+m.wdt.sleep_fed(0)
 check('a zero wait feeds once', WDT.instances[0].feeds - before, 1)
 
 # --- 4. No unfed sleep long enough to bite ---------------------------------
@@ -159,7 +159,7 @@ clock[0] = 0
 
 
 # sleep_fed does not advance the stub clock, so drive it from the poll.
-real_sleep_fed = m.sleep_fed
+real_sleep_fed = m.wdt.sleep_fed
 
 
 def ticking_sleep(seconds):
@@ -167,7 +167,7 @@ def ticking_sleep(seconds):
     real_sleep_fed(seconds)
 
 
-m.sleep_fed = ticking_sleep
+m.wdt.sleep_fed = ticking_sleep
 m.connect_wifi()
 issued = events.count('wlan_connect')
 check('one connect per attempt, not per poll', issued, 3)
@@ -178,7 +178,7 @@ check('no reset was needed', 'machine_reset' in events, False)
 # boot() itself calls connect_wifi() and would otherwise loop here.
 WLAN.connected = True
 m2 = fresh()
-m2.sleep_fed = ticking_sleep
+m2.wdt.sleep_fed = ticking_sleep
 WLAN.connected = False
 WLAN.connect_after = None
 del events[:]
@@ -200,7 +200,7 @@ WLAN.connected = True
 # connection phase, and once status reads 3 the reset path is unreachable.
 WLAN.connected = True
 m = fresh()
-m.sleep_fed = lambda s: None
+m.wdt.sleep_fed = lambda s: None
 Requests.raise_oserror = True
 del events[:]
 
@@ -215,7 +215,7 @@ check('nothing was reset yet', 'machine_reset' in events, False)
 
 # The bounce keeps the log, the queue and the uptime.
 lines_before = len(m.logLines)
-m.sleep_fed = lambda s: None
+m.wdt.sleep_fed = lambda s: None
 m.bounce_wifi()
 check('the bounce clears the request', m.networkBounceRequested, False)
 check('and records that it was tried', m.networkBounced, True)
@@ -319,7 +319,7 @@ check('and clears the backoff', m.networkBackoffMs, 0)
 # awaiting DHCP; calling connect() again aborts that and starts over.
 WLAN.connected = True
 m = fresh()
-m.sleep_fed = ticking_sleep
+m.wdt.sleep_fed = ticking_sleep
 WLAN.connected = False
 WLAN.status_code = 2          # joining, making progress
 WLAN.connect_after = None
@@ -365,11 +365,11 @@ try:
     m = fresh()
     check('boot survives an unavailable watchdog',
           m.doorBellInput is not None, True)
-    check('wdt stays None', m.wdt, None)
+    check('wdt stays None', m.wdt.wdt, None)
     check('feeding a missing watchdog is harmless',
-          (m.feed_watchdog(), True)[1], True)
+          (m.wdt.feed_watchdog(), True)[1], True)
     check('sleep_fed still works without one',
-          (m.sleep_fed(0.1), True)[1], True)
+          (m.wdt.sleep_fed(0.1), True)[1], True)
 finally:
     WDT.available = True
 

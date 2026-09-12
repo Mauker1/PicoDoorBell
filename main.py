@@ -47,6 +47,7 @@ try:
 except ImportError:
     ntptime = None
 import config
+import wdt
 from secrets import secrets
 
 ####################################################################################
@@ -210,7 +211,7 @@ clockEverSynced = False
 # sector erase.
 #
 # The margin is therefore bought by feeding from inside the blocking work rather
-# than only at the top of the loop -- see feed_watchdog() call sites. B1 was a
+# than only at the top of the loop -- see wdt.feed_watchdog() call sites. B1 was a
 # prerequisite: with its 5 s post-press sleep still in place, a press followed by
 # a getUpdates could pass nine seconds without a feed.
 #
@@ -245,8 +246,6 @@ WIFI_STATUS_NAMES = {
     -2: 'no AP found',
     -3: 'auth rejected',
 }
-
-wdt = None
 
 ####################################################################################
 # B1 input timings now live in config.py.
@@ -478,7 +477,7 @@ def bounce_wifi():
         wlan.disconnect()
     except Exception as e:
         report('WiFi disconnect failed: ' + str(e))
-    sleep_fed(2)
+    wdt.sleep_fed(2)
     connect_wifi()
 
 def do_request(method, url, payload=None):
@@ -504,7 +503,7 @@ def do_request(method, url, payload=None):
 
     response = None
     # A handshake can run into seconds; the watchdog must not bite mid-request.
-    feed_watchdog()
+    wdt.feed_watchdog()
     try:
         if requestsTimeoutSupported:
             try:
@@ -554,50 +553,10 @@ def do_request(method, url, payload=None):
                 pass
         # urequests leaks sockets quickly without this on a 264 KB part.
         gc.collect()
-        feed_watchdog()
+        wdt.feed_watchdog()
 
-def arm_watchdog():
-    """Start the watchdog. Irreversible on this chip.
-
-    Armed after hardware and state are up but before networking, because a
-    wedged cyw43 stack is the failure this is chiefly for. Not armed any
-    earlier: error_halt() blinks forever by design, and a watchdog would
-    turn a configuration mistake into a silent reset loop instead of a
-    visible fault.
-    """
-    global wdt
-    if wdt is not None:
-        return
-    try:
-        wdt = machine.WDT(timeout=config.WDT_TIMEOUT_MS)
-        message = 'Watchdog armed at ' + str(config.WDT_TIMEOUT_MS) + 'ms'
-    except Exception as e:
-        # An unguarded device still answers the door. One that refuses to
-        # start does not.
-        message = 'Watchdog unavailable: ' + str(e)
-    report(message)
-
-def feed_watchdog():
-    if wdt is not None:
-        try:
-            wdt.feed()
-        except Exception:
-            pass
-
-def sleep_fed(seconds):
-    """Sleep without letting the watchdog bite.
-
-    Any wait longer than the timeout has to be broken up. The 10 s grace
-    period after an error was the clearest example: left whole, it would
-    have reset the device every time anything went wrong.
-    """
-    remaining = int(seconds * 1000)
-    while remaining > 0:
-        feed_watchdog()
-        step = 500 if remaining > 500 else remaining
-        time.sleep_ms(step)
-        remaining -= step
-    feed_watchdog()
+# The watchdog primitive (arm_watchdog, feed_watchdog, sleep_fed) now lives
+# in wdt.py.
 
 # Send a telegram message to a given user id
 def send_message (chatId, message):
@@ -1197,12 +1156,12 @@ def blink_led(num_blinks, on_ms=200, off_ms=200):
             led.on()
         except Exception:
             pass
-        sleep_fed(on_ms / 1000.0)
+        wdt.sleep_fed(on_ms / 1000.0)
         try:
             led.off()
         except Exception:
             pass
-        sleep_fed(off_ms / 1000.0)
+        wdt.sleep_fed(off_ms / 1000.0)
     set_led_state(ledState)
 
 
@@ -1310,7 +1269,7 @@ def connect_wifi():
                 report('WiFi connect failed: ' + str(e))
             issuedAt = now
 
-        sleep_fed(config.WIFI_POLL_MS / 1000.0)
+        wdt.sleep_fed(config.WIFI_POLL_MS / 1000.0)
         # Connecting blink: one toggle per poll pass gives a ~1 Hz flash
         # while the join is under way, without a timer. Only while the state
         # is connecting, so a caller that set some other state is respected.
@@ -1522,7 +1481,7 @@ def sync_clock():
         return False
     # Bracket the blocking UDP call with feeds; set the module timeout low so
     # a dead NTP server cannot approach the watchdog ceiling.
-    feed_watchdog()
+    wdt.feed_watchdog()
     try:
         ntptime.timeout = config.NTP_TIMEOUT_S
     except Exception:
@@ -1533,9 +1492,9 @@ def sync_clock():
         epoch = ntptime.time()
     except Exception as e:
         append_to_log('NTP sync failed: ' + str(e))
-        feed_watchdog()
+        wdt.feed_watchdog()
         return False
-    feed_watchdog()
+    wdt.feed_watchdog()
     if epoch < config.EPOCH_SANITY_FLOOR_MP:
         # A stalled read can return 0 or a tiny value. Anchoring to that
         # would date every ring to the epoch, which is worse than no clock.
@@ -1859,7 +1818,7 @@ def mark_boot_stable():
     state_set('boots', bootNumber)
     # A sector erase stalls the CPU for tens of milliseconds, occasionally
     # more, and runs with interrupts disabled.
-    feed_watchdog()
+    wdt.feed_watchdog()
     # Attempts since the last stable boot are now history.
     try:
         scratch_write(SCRATCH_UNSTABLE_IDX, 0)
@@ -1914,7 +1873,11 @@ def boot():
     append_to_log(summary)
 
     # Everything that could legitimately hang from here on is network work.
-    arm_watchdog()
+    # arm_watchdog returns its status rather than logging, to stay a leaf;
+    # report it here.
+    armMessage = wdt.arm_watchdog()
+    if armMessage:
+        report(armMessage)
 
     try:
         connect_wifi()
@@ -1964,7 +1927,7 @@ if __name__ == '__main__':
                 lastLogCheck = time.ticks_ms()
 
             mark_boot_stable()
-            feed_watchdog()
+            wdt.feed_watchdog()
 
             # Record when this pass ran, so was_unpollable() can tell whether
             # a ring landed in a gap the old polling loop could not have
@@ -1975,11 +1938,11 @@ if __name__ == '__main__':
             maybe_resync_clock()
             maybe_heartbeat()
 
-            sleep_fed(config.loopDelay)
+            wdt.sleep_fed(config.loopDelay)
 
         except KeyboardInterrupt:
             print('KeyboardInterrupt')
-            if wdt is not None:
+            if wdt.wdt is not None:
                 # Nothing can disarm an RP2040 watchdog. Leaving the loop
                 # stops the feeding, so the board resets shortly. That is
                 # correct in service (an exited loop is a dead doorbell) but
@@ -1999,4 +1962,4 @@ if __name__ == '__main__':
             append_to_log('WiFi disconnected: ' + str(e))
             # Grace period, in fed slices. Left as a single sleep(10) this
             # would outlast the watchdog and reset the board on every error.
-            sleep_fed(10)
+            wdt.sleep_fed(10)

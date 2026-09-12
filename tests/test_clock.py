@@ -61,7 +61,8 @@ def fresh(offset=0):
     Ntptime.calls = 0
     stubs.install()
     sys.modules['board'] = stubs._Mod(doorBellPin=16, utcOffset=offset)
-    sys.modules.pop('main', None)
+    for name in stubs.FIRMWARE_MODULES:
+        sys.modules.pop(name, None)
     import main
     Ntptime.calls = 0
     return main

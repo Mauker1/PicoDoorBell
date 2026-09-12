@@ -299,8 +299,21 @@ def load_firmware():
     Drops any cached copy first so each call re-runs main.py's top level
     against the current stub state, the same isolation the old exec-based
     loader gave by building a new namespace each time.
+
+    The E2 split introduced firmware submodules (wdt, led, and more to
+    come) that hold mutable module globals. Those must be dropped too, or a
+    global set in one test (an armed watchdog, a clock anchor) would leak
+    into the next through sys.modules. Config and the pure leaves have no
+    mutable state, but dropping them is harmless and keeps this simple:
+    clear every first-party firmware module, then let main re-import them.
     """
     install()
-    sys.modules.pop('main', None)
+    for name in FIRMWARE_MODULES:
+        sys.modules.pop(name, None)
     import main
     return main
+
+
+# First-party firmware modules that main imports. Dropped before each load so
+# their module-level state starts fresh. Extend as the E2 split adds modules.
+FIRMWARE_MODULES = ('main', 'config', 'wdt')
