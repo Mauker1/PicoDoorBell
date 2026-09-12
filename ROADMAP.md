@@ -95,6 +95,18 @@ future `verdict=power` reboot means the supply path is not fully solved; any fut
 `verdict=watchdog` is the stall fault, unaffected by the power setup, and the one that would
 most benefit from `C1` on production so the next bite is legible against the wall clock.
 
+**Bench power reboots are a rig artifact, not part of this dataset.** The bench is fed through
+an Anker USB-C hub whose own power comes from the MacBook's PSU; when that PSU is interrupted,
+the laptop falls back to battery and the switchover gap browns out the Pico. Reproduced
+deliberately: pulling the hub's PSU produced `verdict=power` on demand. A cluster of three
+`verdict=power` boots in 16 minutes, unattended, was the same mechanism (the upstream feed
+flickering). This is mundane, bench-only, correctly diagnosed by C4 every time, and shares no
+mechanism with production's watchdog fault. Production's power path is entirely different
+(wall adapter plus surge protector, no hub, no battery fallback). The bench's clustered
+`verdict=power` events must not be read as evidence about production; they are noted here only
+to sever that false link. The fix, if stabler bench soaks are wanted, is physical (feed the
+Pico directly, or keep the hub PSU stable), not firmware.
+
 ### Reading a reboot
 
 | Verdict | Meaning | Next step |
@@ -766,12 +778,16 @@ PEP 8 naming, drop parenthesized conditions, remove dead code (`startupTime`, tr
 
 ## G. Hardware & UX
 
-### 🧪 G1: LED state machine (P2)
+### 🔬 G1: LED state machine (P2)
 
-> **Still unverified:** implemented and passing on the bench suite
-> (`tests/test_led.py`, 28 assertions), but the patterns have not yet been watched on real
-> hardware. Waiting on a bench flash to confirm the connecting blink, the solid connected
-> level, the ring alert, and that the error blink still escalates through the watchdog.
+> Bench-verified on hardware (boot #37): solid on at rest when connected; a delivered ring
+> shows a double-blink then returns to solid (a rejected transient shows nothing, so the
+> alert is correctly gated to real deliveries); dropping the AP produced the ~1 Hz
+> connecting blink, and restoring it went connecting blink to 3-flash confirmation to solid
+> on. That reconnect cycle is the path the old inversion bug lived on, and the LED tracked
+> reality throughout, blinking while down, solid only once actually back up. The error blink
+> (`LED_ERROR`) cannot be triggered without a fatal setup fault and stays test-covered.
+> `tests/test_led.py`, 28 assertions. Not yet on production.
 
 Distinct patterns for connecting / connected / error / alert-sent.
 
