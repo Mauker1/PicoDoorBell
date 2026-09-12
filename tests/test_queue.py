@@ -120,10 +120,10 @@ check('all three delivered', len(sent), 3)
 # --- 4. The queue is bounded -----------------------------------------------
 m = fresh()
 WLAN.connected = False
-for _ in range(m.QUEUE_MAX + 5):
+for _ in range(m.config.QUEUE_MAX + 5):
     m.enqueue_ring(2000)
     clock[0] += 100
-check('queue stops at its limit', len(m.queue), m.QUEUE_MAX)
+check('queue stops at its limit', len(m.queue), m.config.QUEUE_MAX)
 check('overflow counted', m.queueDropped, 5)
 
 # --- 5. A permanent failure does not block the queue -----------------------
@@ -151,7 +151,7 @@ check('a brief outage writes nothing', bool(
     json.load(open('state.json'))['queue']) if os.path.exists('state.json') else False,
       False)
 
-clock[0] += m.QUEUE_SNAPSHOT_AFTER_MS + 1000
+clock[0] += m.config.QUEUE_SNAPSHOT_AFTER_MS + 1000
 m.maybe_snapshot_queue()
 stored = json.load(open('state.json'))['queue']
 check('a long outage is persisted', len(stored), 1)
@@ -165,7 +165,7 @@ check('repeated calls do not rewrite',
 # Once delivered, the flash copy is cleared.
 WLAN.connected = True
 m.flush_queue()
-clock[0] += m.QUEUE_SNAPSHOT_MIN_MS + 1000
+clock[0] += m.config.QUEUE_SNAPSHOT_MIN_MS + 1000
 m.maybe_snapshot_queue()
 check('the flash copy is cleared after delivery',
       json.load(open('state.json'))['queue'], [])
@@ -203,7 +203,7 @@ check('then cleared', m.pendingAnnouncement, None)
 m = fresh()
 WLAN.connected = False
 m.enqueue_ring(2345)
-clock[0] += m.QUEUE_SNAPSHOT_AFTER_MS + 1000
+clock[0] += m.config.QUEUE_SNAPSHOT_AFTER_MS + 1000
 m.maybe_snapshot_queue()
 check('persisted before the reset', len(json.load(open('state.json'))['queue']), 1)
 

@@ -84,7 +84,7 @@ m.sleep_fed(10)
 feeds = WDT.instances[0].feeds - before
 check('a 10 s wait feeds many times', feeds >= 20, True)
 check('feeds are spaced under the timeout',
-      (10000 / feeds) < m.WDT_TIMEOUT_MS, True)
+      (10000 / feeds) < m.config.WDT_TIMEOUT_MS, True)
 
 before = WDT.instances[0].feeds
 m.sleep_fed(0.1)
@@ -130,9 +130,9 @@ finally:
 # A timeout below the watchdog turns a stalled socket into an outcome.
 Requests.last_timeout = None
 m.do_request('GET', 'https://example.invalid/x')
-check('requests carry a timeout', Requests.last_timeout, m.REQUEST_TIMEOUT_S)
+check('requests carry a timeout', Requests.last_timeout, m.config.REQUEST_TIMEOUT_S)
 check('the timeout fires before the watchdog',
-      m.REQUEST_TIMEOUT_S * 1000 < m.WDT_TIMEOUT_MS, True)
+      m.config.REQUEST_TIMEOUT_S * 1000 < m.config.WDT_TIMEOUT_MS, True)
 
 # An older urequests without the parameter must still work.
 Requests.accepts_timeout = False
@@ -188,7 +188,7 @@ except stubs.ResetCalled:
     pass
 check('a hopeless outage ends in a reset', 'machine_reset' in events, True)
 check('attempts are bounded',
-      events.count('wlan_connect') <= m2.WIFI_MAX_ATTEMPTS, True)
+      events.count('wlan_connect') <= m2.config.WIFI_MAX_ATTEMPTS, True)
 check('the reset is marked as self-inflicted',
       mem32[0x40058000 + 0x0c + 4], m2.SCRATCH_INTENT)
 WLAN.connected = True
@@ -204,7 +204,7 @@ m.sleep_fed = lambda s: None
 Requests.raise_oserror = True
 del events[:]
 
-m.lastNetworkSuccess = -m.NETWORK_DEAD_MS - 1000
+m.lastNetworkSuccess = -m.config.NETWORK_DEAD_MS - 1000
 for _ in range(3):
     # Backoff would otherwise skip most of these without attempting.
     m.networkBackoffMs = 0
@@ -223,7 +223,7 @@ check('the log survives a bounce', len(m.logLines) >= lines_before, True)
 
 # Still failing after a bounce: now a reset is the only local action left.
 try:
-    m.lastNetworkSuccess = -m.NETWORK_DEAD_MS - 1000
+    m.lastNetworkSuccess = -m.config.NETWORK_DEAD_MS - 1000
     for _ in range(3):
         m.networkBackoffMs = 0
         m.do_request('GET', 'https://example.invalid/x')
@@ -247,12 +247,12 @@ check('recovery resets the escalation', m.networkBounced, False)
 m = fresh()
 Requests.raise_oserror = True
 m.lastNetworkSuccess = 0
-clock[0] = m.NETWORK_DEAD_MS // 2
+clock[0] = m.config.NETWORK_DEAD_MS // 2
 m.networkBackoffMs = 0
 m.do_request('GET', 'https://example.invalid/x')
 check('a short dead spell asks for nothing',
       m.networkBounceRequested, False)
-clock[0] = m.NETWORK_DEAD_MS + 1000
+clock[0] = m.config.NETWORK_DEAD_MS + 1000
 m.networkBackoffMs = 0
 m.do_request('GET', 'https://example.invalid/x')
 check('a long one asks for a bounce', m.networkBounceRequested, True)
@@ -283,7 +283,7 @@ m.note_request_result(m.REQUEST_RETRY)
 second = m.networkBackoffMs
 check('backoff grows', second > first, True)
 check('backoff is capped',
-      m.NETWORK_BACKOFF_MAX_MS >= second, True)
+      m.config.NETWORK_BACKOFF_MAX_MS >= second, True)
 
 del events[:]
 outcome, status, body = m.do_request('GET', 'https://example.invalid/x')
@@ -291,7 +291,7 @@ check('a backed-off request is skipped, not attempted',
       'http_get' in events, False)
 # A skip is not evidence of anything: it must not count toward the
 # dead-network deadline, and must not be logged as a failure.
-m.lastNetworkSuccess = -m.NETWORK_DEAD_MS - 1000
+m.lastNetworkSuccess = -m.config.NETWORK_DEAD_MS - 1000
 m.networkBounceRequested = False
 outcome, status, body = m.do_request('GET', 'https://example.invalid/x')
 check('a skipped request reports as skipped', outcome, m.REQUEST_SKIPPED)
@@ -332,9 +332,9 @@ WLAN.connect_after = 200      # never succeeds within the window under test
 check('progress states are recognised',
       2 in m.WIFI_PROGRESS_STATES, True)
 check('a stalled attempt retries sooner than a progressing one',
-      m.WIFI_REISSUE_MS < m.WIFI_PROGRESS_MAX_MS, True)
+      m.config.WIFI_REISSUE_MS < m.config.WIFI_PROGRESS_MAX_MS, True)
 check('but not so soon that it hammers the driver',
-      m.WIFI_REISSUE_MS >= 5000, True)
+      m.config.WIFI_REISSUE_MS >= 5000, True)
 check('status 2 is named, not printed raw',
       m.wifi_status_name(2), 'awaiting IP')
 check('-3 is not called a wrong password',

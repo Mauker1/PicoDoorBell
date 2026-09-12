@@ -68,11 +68,11 @@ os.chdir(tempfile.mkdtemp())
 # --- 1. Bounded by line count, keeping the newest --------------------------
 m = fresh()
 del m.logLines[:]
-for i in range(m.LOG_MAX_LINES + 50):
+for i in range(m.config.LOG_MAX_LINES + 50):
     m.append_to_log('entry %d' % i)
-check('log stops growing', len(m.logLines), m.LOG_MAX_LINES)
+check('log stops growing', len(m.logLines), m.config.LOG_MAX_LINES)
 check('the newest entry is kept',
-      'entry %d' % (m.LOG_MAX_LINES + 49) in m.logLines[-1], True)
+      'entry %d' % (m.config.LOG_MAX_LINES + 49) in m.logLines[-1], True)
 check('the oldest is gone',
       any('entry 0 ' in line for line in m.logLines), False)
 
@@ -94,7 +94,7 @@ check('log cleared after a successful send', len(m.logLines), 1)
 # The regression: one 10000-character message is an unconditional 400.
 m = fresh()
 del m.logLines[:]
-for i in range(m.LOG_MAX_LINES):
+for i in range(m.config.LOG_MAX_LINES):
     m.append_to_log('a fairly long log line number %d, padded out %s' % (i, 'x' * 60))
 total = len(m.log_text())
 check('the log exceeds a single message', total > 4096, True)

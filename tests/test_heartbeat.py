@@ -73,9 +73,9 @@ check('days once past one', m.format_uptime(180000000), '2d 2h 0m')
 # --- 3. It fires on schedule, not before ------------------------------------
 m = fresh()
 m.lastHeartbeat = 0
-clock[0] = m.HEARTBEAT_MS - 1000
+clock[0] = m.config.HEARTBEAT_MS - 1000
 check('nothing before the interval elapses', m.maybe_heartbeat(), False)
-clock[0] = m.HEARTBEAT_MS + 1000
+clock[0] = m.config.HEARTBEAT_MS + 1000
 check('then it reports', m.maybe_heartbeat(), True)
 check('via the retrying slot, not a bare send',
       m.pendingAnnouncement is not None, True)
@@ -89,7 +89,7 @@ check('and it is the heartbeat', 'Still here.' in sent[0], True)
 # A missing "still alive" message is precisely what a dead device looks like.
 m = fresh()
 m.lastHeartbeat = 0
-clock[0] = m.HEARTBEAT_MS + 1000
+clock[0] = m.config.HEARTBEAT_MS + 1000
 m.maybe_heartbeat()
 m.send_message = lambda chat, msg: (m.REQUEST_RETRY, 0, None)
 m.flush_announcement()
@@ -99,11 +99,11 @@ check('a failed heartbeat is kept', m.pendingAnnouncement is not None, True)
 m = fresh()
 m.pendingAnnouncement = 'boot report'
 m.lastHeartbeat = 0
-clock[0] = m.HEARTBEAT_MS + 1000
+clock[0] = m.config.HEARTBEAT_MS + 1000
 check('the heartbeat yields', m.maybe_heartbeat(), False)
 check('the boot report is untouched',
       m.pendingAnnouncement, 'boot report')
-clock[0] += m.HEARTBEAT_MS + 1000
+clock[0] += m.config.HEARTBEAT_MS + 1000
 m.pendingAnnouncement = None
 check('and the next one goes out', m.maybe_heartbeat(), True)
 
@@ -111,7 +111,7 @@ check('and the next one goes out', m.maybe_heartbeat(), True)
 # This is what makes the memory figure readable without killing the run.
 m = fresh()
 m.read_message('chat')
-check('status is a known command', m.statusCommand, '/status')
+check('status is a known command', m.config.statusCommand, '/status')
 
 # --- 7. The per-minute console print is gone --------------------------------
 src = open(SRC).read()

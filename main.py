@@ -46,6 +46,7 @@ try:
     import ntptime
 except ImportError:
     ntptime = None
+import config
 from secrets import secrets
 
 ####################################################################################
@@ -120,14 +121,7 @@ pw = secrets['pw']
 botToken = secrets['botToken']
 chatId = secrets['telegramDmUid']
 
-# Messages
-startupText = 'I am online for the first time! Bot started!'
-reconnectText = 'I am back online! Bot reconnected!'
-text = 'Doorbell activated!'
-
-# Commands
-logCommand = "/log"
-statusCommand = "/status"
+# Messages and commands now live in config.py.
 
 # In memory log
 # Kept as a list of lines, never as one growing string. `log += entry`
@@ -162,8 +156,6 @@ pendingAnnouncement = None
 # reading it by hand means killing the run to reach a REPL.
 ####################################################################################
 
-HEARTBEAT_MS = 21600000      # six hours: four a day, not chatty
-
 lastHeartbeat = 0
 # Accumulated rather than derived from ticks_ms, which wraps at ~12.4 days and
 # is ambiguous past half of that. Summing per-pass differences is wrap-safe
@@ -173,9 +165,6 @@ uptimeMs = 0
 # Time variables
 startupTime = time.ticks_ms()
 lastLogCheck = startupTime
-logCheckInterval = 60000
-LOG_MAX_LINES = 120       # bounded by count, not characters
-LOG_CHUNK_CHARS = 3500    # under Telegram's 4096 limit, with room for markup
 
 ####################################################################################
 # C1 wall clock.
@@ -200,27 +189,7 @@ LOG_CHUNK_CHARS = 3500    # under Telegram's 4096 limit, with room for markup
 # relative until a sync lands.
 ####################################################################################
 
-# NTP's blocking UDP call must not outlast the watchdog. ntptime.timeout is a
-# module global on this port; set low, and the sync is bracketed by feeds.
-NTP_TIMEOUT_S = 2
-# Resync cadence. The RP2040 RTC drifts, so a periodic re-read keeps the
-# anchor honest. Timer-gated like the heartbeat, and NTP-only: it never
-# touches flash. Twelve hours is far tighter than the drift needs but costs
-# only one small UDP round trip.
-NTP_RESYNC_MS = 43200000
-# Epochs below this (2020-01-01 UTC in the Unix epoch) are rejected as
-# garbage: a stalled NTP read can return 0 or a tiny number, and anchoring to
-# that would date every ring to 1970. Guards against a bad sync poisoning the
-# clock.
-EPOCH_SANITY_FLOOR = 1577836800
-
-# MicroPython's epoch is 2000-01-01, not Unix's 1970-01-01. ntptime.time()
-# already returns seconds in the MicroPython epoch, and time.gmtime() expects
-# the same, so the two are consistent with each other and no conversion is
-# needed between them. The sanity floor above is expressed in the Unix epoch
-# for readability and converted once here.
-EPOCH_2000_OFFSET = 946684800
-EPOCH_SANITY_FLOOR_MP = EPOCH_SANITY_FLOOR - EPOCH_2000_OFFSET
+# NTP timing and the epoch sanity floor now live in config.py.
 
 # The live anchor: (epoch_at_anchor, ticks_ms_at_anchor). None until a sync
 # lands. Read through clock_now(), never directly.
@@ -259,17 +228,6 @@ clockEverSynced = False
 # reset fixes.
 ####################################################################################
 
-WIFI_POLL_MS = 500          # how often to check status while waiting
-# A terminal status means the attempt is over, so waiting long achieves
-# nothing -- but retrying instantly is the hammering this function exists to
-# avoid. Must stay below WIFI_PROGRESS_MAX_MS: a dead attempt should retry
-# sooner than a live one, not later.
-WIFI_REISSUE_MS = 10000
-# A healthy association plus DHCP completes in a few seconds. Twenty leaves
-# generous margin; sixty, tried first, wasted a minute per attempt on a
-# network where DHCP was stalling anyway.
-WIFI_PROGRESS_MAX_MS = 20000
-WIFI_MAX_ATTEMPTS = 30      # then reset rather than keep flailing
 
 # Statuses meaning "a join is under way, leave it alone". MicroPython exposes
 # no STAT_ constant for 2, which is associated-but-awaiting-DHCP.
@@ -288,33 +246,11 @@ WIFI_STATUS_NAMES = {
     -3: 'auth rejected',
 }
 
-WDT_TIMEOUT_MS = 8000
-
 wdt = None
 
-# Delays
-loopDelay = 1
-
 ####################################################################################
-# B1 input timings. The old code used one 5 s sleep for three different jobs --
-# debounce, one-alert-per-ring, and an accidental rate limit. They are separate
-# concerns with different right answers, so they are separate constants.
+# B1 input timings now live in config.py.
 ####################################################################################
-
-# Ignore further edges this soon after one. Contact and optocoupler noise only.
-DEBOUNCE_MS = 50
-# A real ring holds terminal 04 high for about 2 s (measured). Anything
-# shorter than this is a transient, not a visitor.
-MIN_PULSE_MS = 150
-# One alert per ring. Must exceed the pulse width so a single ring cannot
-# produce two notifications.
-ALERT_LOCKOUT_MS = 5000
-# Held high far longer than any real ring: a fault, not a caller.
-STUCK_INPUT_MS = 15000
-
-# Button pressed value. Idle is ground, a ring drives 5 V through the
-# optocoupler, so a press is a rising edge.
-pressed = 1
 
 ####################################################################################
 # Latched inputs.
@@ -350,11 +286,7 @@ IN_FIELDS = 11
 # outage has already run long -- a Tier 3 write, event-driven and rare.
 ####################################################################################
 
-QUEUE_MAX = 20                    # bounded: a long outage must not exhaust RAM
-QUEUE_SNAPSHOT_AFTER_MS = 300000  # only persist once an outage passes 5 minutes
-QUEUE_SNAPSHOT_MIN_MS = 300000    # and never more than once per 5 minutes
-QUEUE_FLUSH_PER_PASS = 3          # bound the work in any one loop pass
-DELAY_NOTICE_MS = 10000           # say so if a ring is delivered this late
+# Queue sizing and snapshot timings now live in config.py.
 
 Q_TICKS = 0      # ticks_ms when it was latched; meaningless across a reset
 Q_WIDTH = 1      # pulse width, for the log
@@ -396,7 +328,7 @@ getURL = 'https://api.telegram.org/bot' + botToken + '/getUpdates'
 # headroom to buy on the other side. The answer to that is to make a reset
 # cheap, which the flash boot counter, the scratch reset reason and the
 # immediate queue snapshot already do.
-REQUEST_TIMEOUT_S = 5
+# config.REQUEST_TIMEOUT_S now lives in config.py.
 
 # Flipped off the first time urequests rejects the timeout argument.
 requestsTimeoutSupported = True
@@ -437,9 +369,7 @@ requestsTimeoutSupported = True
 # working association several minutes before the network returned -- and
 # reassociating on that router took 28 attempts. Nothing is lost by waiting,
 # because the queue holds the ring; acting early can make recovery slower.
-NETWORK_DEAD_MS = 300000
-NETWORK_BACKOFF_MS = 5000    # first retry delay, doubling
-NETWORK_BACKOFF_MAX_MS = 60000
+# Network dead/backoff timings now live in config.py.
 
 networkFailures = 0
 networkBackoffMs = 0
@@ -511,11 +441,11 @@ def note_request_result(outcome):
         return
     networkFailures += 1
     if networkBackoffMs:
-        networkBackoffMs = min(networkBackoffMs * 2, NETWORK_BACKOFF_MAX_MS)
+        networkBackoffMs = min(networkBackoffMs * 2, config.NETWORK_BACKOFF_MAX_MS)
     else:
-        networkBackoffMs = NETWORK_BACKOFF_MS
+        networkBackoffMs = config.NETWORK_BACKOFF_MS
     networkRetryAt = time.ticks_add(now, networkBackoffMs)
-    if (time.ticks_diff(now, lastNetworkSuccess) > NETWORK_DEAD_MS and
+    if (time.ticks_diff(now, lastNetworkSuccess) > config.NETWORK_DEAD_MS and
             is_wifi_connected()):
         if networkBounced:
             # The link was already bounced and it did not help, so the fault
@@ -580,9 +510,9 @@ def do_request(method, url, payload=None):
             try:
                 if method == 'POST':
                     response = requests.post(url, json=payload,
-                                             timeout=REQUEST_TIMEOUT_S)
+                                             timeout=config.REQUEST_TIMEOUT_S)
                 else:
-                    response = requests.get(url, timeout=REQUEST_TIMEOUT_S)
+                    response = requests.get(url, timeout=config.REQUEST_TIMEOUT_S)
             except TypeError:
                 # This urequests build has no timeout parameter. Note it once
                 # and fall through to the untimed call below.
@@ -639,8 +569,8 @@ def arm_watchdog():
     if wdt is not None:
         return
     try:
-        wdt = machine.WDT(timeout=WDT_TIMEOUT_MS)
-        message = 'Watchdog armed at ' + str(WDT_TIMEOUT_MS) + 'ms'
+        wdt = machine.WDT(timeout=config.WDT_TIMEOUT_MS)
+        message = 'Watchdog armed at ' + str(config.WDT_TIMEOUT_MS) + 'ms'
     except Exception as e:
         # An unguarded device still answers the door. One that refuses to
         # start does not.
@@ -722,9 +652,9 @@ def read_message(chatId):
     for result in body['result']:
         updateId = result['update_id'] + 1
         command = result['channel_post']['text']
-        if (command == logCommand):
+        if (command == config.logCommand):
             print_log(chatId)
-        elif (command == statusCommand):
+        elif (command == config.statusCommand):
             send_message(chatId, heartbeat_text())
 
 def report(message):
@@ -761,7 +691,7 @@ def append_to_log(message):
     notices. Exactly backwards for diagnosis.
     """
     logLines.append(log_prefix() + ' ' + message)
-    while len(logLines) > LOG_MAX_LINES:
+    while len(logLines) > config.LOG_MAX_LINES:
         # Drop the oldest. Refusing new entries instead, as this once did,
         # preserves the least recent events -- backwards for diagnosis.
         logLines.pop(0)
@@ -782,8 +712,8 @@ def print_log(chatId):
         return True
     pending = log_text()
     while pending:
-        chunk = pending[:LOG_CHUNK_CHARS]
-        if len(pending) > LOG_CHUNK_CHARS:
+        chunk = pending[:config.LOG_CHUNK_CHARS]
+        if len(pending) > config.LOG_CHUNK_CHARS:
             edge = chunk.rfind('\n')
             if edge > 0:
                 chunk = chunk[:edge]
@@ -997,7 +927,7 @@ SCRATCH_MAGIC_IDX = 2
 SCRATCH_UNSTABLE_IDX = 3
 
 # How long the device must stay up before a boot counts as stable.
-BOOT_STABLE_MS = 60000
+config.BOOT_STABLE_MS = 60000
 
 bootNumber = None
 bootRecorded = False
@@ -1201,7 +1131,7 @@ state = default_state()
 # The RP2040 has no spare timer wired to this, and the onboard LED hangs off
 # the CYW43 chip, so there is no interrupt-driven pattern. Steady states are
 # therefore solid levels; the "connecting" blink is driven by the connect
-# loop, which already polls every WIFI_POLL_MS, toggling once per pass for a
+# loop, which already polls every config.WIFI_POLL_MS, toggling once per pass for a
 # roughly 1 Hz flash at no extra cost.
 ####################################################################################
 
@@ -1331,10 +1261,10 @@ def connect_wifi():
     Callers decide whether to announce; mixing the two made a transport
     failure look like a connection failure.
 
-    One connect() is issued and then given WIFI_REISSUE_MS to work before
+    One connect() is issued and then given config.WIFI_REISSUE_MS to work before
     another is tried. The previous code re-issued every three seconds,
     which left the stack associated but unable to pass traffic after a long
-    outage. After WIFI_MAX_ATTEMPTS the board resets, because at that point
+    outage. After config.WIFI_MAX_ATTEMPTS the board resets, because at that point
     a wedged driver is the likeliest remaining explanation and a reset is
     the only thing that clears it.
     """
@@ -1362,13 +1292,13 @@ def connect_wifi():
             # A join is under way. Calling connect() again aborts it and
             # starts over -- observed as seven attempts over three and a
             # half minutes on a network that was perfectly available.
-            reissue = time.ticks_diff(now, issuedAt) > WIFI_PROGRESS_MAX_MS
+            reissue = time.ticks_diff(now, issuedAt) > config.WIFI_PROGRESS_MAX_MS
         else:
-            reissue = time.ticks_diff(now, issuedAt) > WIFI_REISSUE_MS
+            reissue = time.ticks_diff(now, issuedAt) > config.WIFI_REISSUE_MS
 
         if reissue:
             attempts += 1
-            if attempts > WIFI_MAX_ATTEMPTS:
+            if attempts > config.WIFI_MAX_ATTEMPTS:
                 self_reset('WiFi unreachable after ' + str(attempts - 1) +
                            ' attempts', REASON_WIFI)
             set_led_state(LED_CONNECTING)
@@ -1380,7 +1310,7 @@ def connect_wifi():
                 report('WiFi connect failed: ' + str(e))
             issuedAt = now
 
-        sleep_fed(WIFI_POLL_MS / 1000.0)
+        sleep_fed(config.WIFI_POLL_MS / 1000.0)
         # Connecting blink: one toggle per poll pass gives a ~1 Hz flash
         # while the join is under way, without a timer. Only while the state
         # is connecting, so a caller that set some other state is respected.
@@ -1403,13 +1333,13 @@ def announce_startup():
         # Carry the reset diagnosis into the chat. The reboots being chased
         # happen on the production unit, not the bench, so this message is
         # the only place the evidence reliably surfaces.
-        pendingAnnouncement = startupText + '\n' + format_reset_info(resetInfo)
+        pendingAnnouncement = config.startupText + '\n' + format_reset_info(resetInfo)
         isStartup = False
     else:
         # Deliberately no reset summary. Nothing reset -- the network came
         # back. Repeating the last boot's diagnosis here made a WiFi blip
         # look like a reboot, which corrupts the very dataset C4 collects.
-        pendingAnnouncement = reconnectText
+        pendingAnnouncement = config.reconnectText
     return flush_announcement()
 
 def flush_announcement():
@@ -1448,9 +1378,9 @@ def make_edge_handler(entry):
     """
     def handler(pin):
         now = time.ticks_ms()
-        if pin.value() == pressed:
+        if pin.value() == config.pressed:
             if (entry[IN_COMPLETE] and
-                    time.ticks_diff(now, entry[IN_FALL]) < DEBOUNCE_MS):
+                    time.ticks_diff(now, entry[IN_FALL]) < config.DEBOUNCE_MS):
                 # The line came back up almost immediately, so the fall was
                 # contact chatter on the way in, not the release. Reopen the
                 # pulse and keep the original rise time.
@@ -1506,12 +1436,12 @@ def process_input(entry):
     now = time.ticks_ms()
     width = None
     if entry[IN_COMPLETE]:
-        if time.ticks_diff(now, entry[IN_FALL]) < DEBOUNCE_MS:
+        if time.ticks_diff(now, entry[IN_FALL]) < config.DEBOUNCE_MS:
             # The close is still provisional: the line may yet bounce back
             # up and prove this was chatter rather than the release.
             return
         width = time.ticks_diff(entry[IN_FALL], entry[IN_RISE])
-    elif time.ticks_diff(now, entry[IN_RISE]) > STUCK_INPUT_MS:
+    elif time.ticks_diff(now, entry[IN_RISE]) > config.STUCK_INPUT_MS:
         # Still high long after any real ring would have ended.
         entry[IN_PENDING] = False
         report(entry[IN_NAME] + ' input stuck high')
@@ -1522,7 +1452,7 @@ def process_input(entry):
 
     entry[IN_PENDING] = False
 
-    if width < MIN_PULSE_MS:
+    if width < config.MIN_PULSE_MS:
         entry[IN_REJECTED] += 1
         report(entry[IN_NAME] + ' transient ignored, ' + str(width) + 'ms')
         return
@@ -1531,7 +1461,7 @@ def process_input(entry):
         entry[IN_MISSED] += 1
 
     if (entry[IN_RINGS] > 0 and
-            time.ticks_diff(now, entry[IN_LAST_ALERT]) < ALERT_LOCKOUT_MS):
+            time.ticks_diff(now, entry[IN_LAST_ALERT]) < config.ALERT_LOCKOUT_MS):
         # Same ring, or an impatient second press. One alert is enough.
         return
 
@@ -1594,7 +1524,7 @@ def sync_clock():
     # a dead NTP server cannot approach the watchdog ceiling.
     feed_watchdog()
     try:
-        ntptime.timeout = NTP_TIMEOUT_S
+        ntptime.timeout = config.NTP_TIMEOUT_S
     except Exception:
         # Older ntptime without a configurable timeout. The watchdog remains
         # the backstop, exactly as for urequests.
@@ -1606,7 +1536,7 @@ def sync_clock():
         feed_watchdog()
         return False
     feed_watchdog()
-    if epoch < EPOCH_SANITY_FLOOR_MP:
+    if epoch < config.EPOCH_SANITY_FLOOR_MP:
         # A stalled read can return 0 or a tiny value. Anchoring to that
         # would date every ring to the epoch, which is worse than no clock.
         append_to_log('NTP returned an implausible epoch; ignoring it')
@@ -1625,7 +1555,7 @@ def maybe_resync_clock():
     """
     if not clockEverSynced:
         return sync_clock()
-    if time.ticks_diff(time.ticks_ms(), lastNtpSync) < NTP_RESYNC_MS:
+    if time.ticks_diff(time.ticks_ms(), lastNtpSync) < config.NTP_RESYNC_MS:
         return False
     return sync_clock()
 
@@ -1674,7 +1604,7 @@ def current_epoch():
 
 def enqueue_ring(width):
     global queueDropped
-    if len(queue) >= QUEUE_MAX:
+    if len(queue) >= config.QUEUE_MAX:
         # Drop the oldest: a visitor from an hour ago matters less than the
         # one at the door now.
         queue.pop(0)
@@ -1705,7 +1635,7 @@ def describe_delay(entry):
     if epoch is not None:
         return ' (' + format_timestamp(epoch) + ')'
     age = time.ticks_diff(time.ticks_ms(), entry[Q_TICKS])
-    if age < DELAY_NOTICE_MS:
+    if age < config.DELAY_NOTICE_MS:
         return ''
     return ' (delayed ' + str(age // 1000) + 's)'
 
@@ -1717,9 +1647,9 @@ def flush_queue():
     on the bench as a logged ring that never arrived.
     """
     sentCount = 0
-    while queue and sentCount < QUEUE_FLUSH_PER_PASS:
+    while queue and sentCount < config.QUEUE_FLUSH_PER_PASS:
         entry = queue[0]
-        outcome, status, body = send_message(chatId, text + describe_delay(entry))
+        outcome, status, body = send_message(chatId, config.text + describe_delay(entry))
         if outcome == REQUEST_OK:
             queue.pop(0)
             sentCount += 1
@@ -1758,9 +1688,9 @@ def maybe_snapshot_queue():
         if state_get('queue', []):
             snapshot_queue()      # delivered; clear the copy on flash
         return
-    if time.ticks_diff(now, queue[0][Q_TICKS]) < QUEUE_SNAPSHOT_AFTER_MS:
+    if time.ticks_diff(now, queue[0][Q_TICKS]) < config.QUEUE_SNAPSHOT_AFTER_MS:
         return
-    if time.ticks_diff(now, lastSnapshotTicks) < QUEUE_SNAPSHOT_MIN_MS:
+    if time.ticks_diff(now, lastSnapshotTicks) < config.QUEUE_SNAPSHOT_MIN_MS:
         return
     snapshot_queue()
 
@@ -1837,7 +1767,7 @@ def maybe_heartbeat():
     report matters more, and the next heartbeat is only hours away.
     """
     global lastHeartbeat, pendingAnnouncement
-    if time.ticks_diff(time.ticks_ms(), lastHeartbeat) < HEARTBEAT_MS:
+    if time.ticks_diff(time.ticks_ms(), lastHeartbeat) < config.HEARTBEAT_MS:
         return False
     lastHeartbeat = time.ticks_ms()
     if pendingAnnouncement is not None:
@@ -1938,7 +1868,7 @@ def mark_boot_stable():
     # The only flash write in normal operation; a silent one is hard to
     # confirm while validating.
     report('Boot ' + str(bootNumber) + ' stable after ' +
-           str(BOOT_STABLE_MS // 1000) + 's')
+           str(config.BOOT_STABLE_MS // 1000) + 's')
 
 def boot():
     """Bring the device up, hardware first.
@@ -1977,7 +1907,7 @@ def boot():
 
     bootNumber = state_get('boots', 0) + 1
     resetInfo['bootNumber'] = bootNumber
-    bootStableAt = time.ticks_add(time.ticks_ms(), BOOT_STABLE_MS)
+    bootStableAt = time.ticks_add(time.ticks_ms(), config.BOOT_STABLE_MS)
 
     summary = format_reset_info(resetInfo)
     print(summary)
@@ -2026,7 +1956,7 @@ if __name__ == '__main__':
             maybe_snapshot_queue()
 
             # Check for new messages
-            if (time.ticks_diff(time.ticks_ms(), lastLogCheck) > logCheckInterval):
+            if (time.ticks_diff(time.ticks_ms(), lastLogCheck) > config.logCheckInterval):
                 # Log only. Printed once a minute it was pure noise, and it
                 # crowded out the events worth seeing in a long run.
                 append_to_log('Checking for new messages')
@@ -2045,7 +1975,7 @@ if __name__ == '__main__':
             maybe_resync_clock()
             maybe_heartbeat()
 
-            sleep_fed(loopDelay)
+            sleep_fed(config.loopDelay)
 
         except KeyboardInterrupt:
             print('KeyboardInterrupt')
@@ -2055,7 +1985,7 @@ if __name__ == '__main__':
                 # correct in service (an exited loop is a dead doorbell) but
                 # it is worth saying out loud on the bench.
                 print('Watchdog is armed: expect a reset within ' +
-                      str(WDT_TIMEOUT_MS // 1000) + 's')
+                      str(config.WDT_TIMEOUT_MS // 1000) + 's')
             break
         except Exception as e:
             print(e)

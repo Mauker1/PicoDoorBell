@@ -647,24 +647,44 @@ instructions. It should become *"edit `config.py`."*
 `main.py` is **1720 lines**, up from 209 at the start of this work. It was P2 when the file
 was small enough that the cost of leaving it alone was theoretical. It no longer is.
 
-**Proposed layering.** Acyclic, each module depending only on those above it:
+**Proposed layering.** Acyclic, each module depending only on those above it. Revised from
+the original list to reflect C1 and G1, which landed after the first draft: the watchdog, the
+wall-clock reads, and the LED are pulled out as leaf modules so nothing reaches sideways for
+them.
 
 | Module | Holds | Depends on |
 | --- | --- | --- |
 | `board.py` | Pin assignments per revision *(done)* | - |
-| `secrets.py` | Credentials, chat id | - |
+| `secrets.py` | Credentials, chat id *(done)* | - |
 | `config.py` | Timings, thresholds, message strings (E1) | - |
-| `applog.py` | `logLines`, `append_to_log`, `report`, `print_log` | config |
+| `wdt.py` | The watchdog and `sleep_fed`: the "do not starve the dog" primitive | - |
+| `clockmod.py` | C1 anchor plus `clock_now`, `format_timestamp`, `clock_is_live`: pure time math | - |
+| `led.py` | G1 LED state machine | wdt |
+| `applog.py` | `logLines`, `append_to_log`, `report`, `print_log`, `log_prefix` | config, clockmod |
 | `persist.py` | `state.json`, the tier rules, atomic write | applog |
 | `resets.py` | Scratch registers, `read_reset_info`, verdicts | applog, persist |
-| `net.py` | WiFi connect/bounce, `do_request`, backoff, watchdog feed | config, applog |
-| `telegram.py` | `send_message`, `read_message`, commands, ring queue | net, applog, persist |
+| `net.py` | WiFi connect/bounce, `do_request`, backoff | config, applog, wdt, led |
+| `telegram.py` | `send_message`, `read_message`, commands, ring queue, `sync_clock` | net, applog, persist, clockmod, led |
 | `doorbell.py` | Input records, IRQ handlers, pulse judging | config, applog |
 | `main.py` | `boot()`, the loop, wiring | everything |
+
+**Why the extra leaves.** Feeding the watchdog is a cross-cutting primitive, not a net
+concern: every long operation must feed, so `wdt.py` is a leaf everything may depend on, the
+way everything may depend on `config`. That is what lets `led.py` be atomic: it needs only
+watchdog-safe blink timing (`wdt`), not a sideways reach into `net`. The wall clock splits:
+the pure reads and formatting are leaf math in `clockmod.py` (so `applog`'s `log_prefix` can
+use them with no cycle), while `sync_clock` and `maybe_resync_clock`, which need net, persist
+and report, live in `telegram.py` and set the anchor through a `clockmod` setter. Without the
+split, `applog` to clock to `telegram` to `applog` would be a cycle.
 
 `doorbell.py` deliberately does **not** send. It latches and judges; delivery is
 `telegram.py`'s job. That is what keeps the graph acyclic, and it already reflects how B1
 and B6 are written.
+
+`led.py` deliberately does **not** decide *when* to change state. It renders states and
+runs blink bursts; the policy (connecting while joining, alert on delivery) stays with the
+callers in `net.py` and `telegram.py`. Same principle as doorbell: mechanism here, policy
+there.
 
 **Functions, not classes: decided.** MicroPython charges for every class and instance, and
 there is exactly one of each thing here: one input list, one queue, one log. Classes would

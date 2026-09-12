@@ -177,7 +177,7 @@ check('maybe_resync does nothing before the interval',
       m.maybe_resync_clock(), False)
 check('no NTP call was made inside the interval',
       Ntptime.calls, before)
-clock[0] += m.NTP_RESYNC_MS + 1000
+clock[0] += m.config.NTP_RESYNC_MS + 1000
 check('maybe_resync resyncs once the interval passes',
       m.maybe_resync_clock(), True)
 

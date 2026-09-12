@@ -55,7 +55,7 @@ check('watchdog armed after the pin, before networking',
       events.index('pin_16') < events.index('wdt_armed') < events.index('http_post'),
       True)
 check('timeout stays under the RP2040 ceiling',
-      m.WDT_TIMEOUT_MS < 8300, True)
+      m.config.WDT_TIMEOUT_MS < 8300, True)
 check('LED was configured', m.led is not None, True)
 check('power save was disabled', WLAN.pm_set, m.WIFI_PM_NONE)
 check('and set before connecting',
@@ -101,9 +101,9 @@ m.isStartup = True
 m.announce_startup()
 m.announce_startup()
 check('first announce carries the startup text',
-      sent[0].startswith(m.startupText), True)
+      sent[0].startswith(m.config.startupText), True)
 check('second announce carries the reconnect text',
-      sent[1].startswith(m.reconnectText), True)
+      sent[1].startswith(m.config.reconnectText), True)
 check('the startup message carries the reset summary',
       'Reset: boot #' in sent[0], True)
 check('the reconnect message does not',
