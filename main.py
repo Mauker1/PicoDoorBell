@@ -48,6 +48,7 @@ except ImportError:
     ntptime = None
 import config
 import wdt
+import clockmod
 from secrets import secrets
 
 ####################################################################################
@@ -192,15 +193,10 @@ lastLogCheck = startupTime
 
 # NTP timing and the epoch sanity floor now live in config.py.
 
-# The live anchor: (epoch_at_anchor, ticks_ms_at_anchor). None until a sync
-# lands. Read through clock_now(), never directly.
-clockAnchorEpoch = None
-clockAnchorTicks = 0
+# The wall-clock anchor and its pure reads now live in clockmod.py. The sync
+# side stays here (it needs ntptime, net, persist, report). lastNtpSync is the
+# resync timer, owned by the sync side.
 lastNtpSync = 0
-# True once at least one sync has ever succeeded this run. Distinguishes
-# "never synced" from "synced but now overdue", which read differently in the
-# heartbeat.
-clockEverSynced = False
 
 ####################################################################################
 # B2 watchdog.
@@ -635,9 +631,9 @@ def log_prefix():
     an absolute one. This is the roadmap's "mark those entries as such": a
     log spanning a sync shows exactly where real time began.
     """
-    epoch = clock_now()
+    epoch = clockmod.clock_now()
     if epoch is not None:
-        return format_timestamp(epoch)
+        return clockmod.format_timestamp(epoch, utcOffset)
     return 't' + str(time.ticks_ms())
 
 def append_to_log(message):
@@ -1431,41 +1427,6 @@ def process_input(entry):
     # not discarded until Telegram confirms it.
     enqueue_ring(width)
 
-def clock_now():
-    """Current wall-clock epoch (MicroPython epoch), or None if unsynced.
-
-    Derived from the anchor rather than read from anything: epoch at the
-    anchor, plus however long ticks_ms says has passed since. ticks_diff
-    keeps the elapsed term correct across the ticks_ms wrap, so this clock
-    survives longer than the raw counter that feeds it.
-    """
-    if clockAnchorEpoch is None:
-        return None
-    elapsed = time.ticks_diff(time.ticks_ms(), clockAnchorTicks)
-    # ticks_ms can read microscopically behind a stored value across a wrap
-    # boundary; never let the clock run backwards.
-    if elapsed < 0:
-        elapsed = 0
-    return clockAnchorEpoch + elapsed // 1000
-
-def clock_is_live():
-    """True when a real time is available."""
-    return clockAnchorEpoch is not None
-
-def set_clock_anchor(epoch):
-    """Record a fresh (epoch, ticks) anchor, in RAM and, coarsely, on flash.
-
-    The flash copy is only for aging rings recovered after a reset, so it is
-    written through state_set (which skips the write when unchanged) and its
-    imprecision is accepted: see the section comment.
-    """
-    global clockAnchorEpoch, clockAnchorTicks, clockEverSynced
-    clockAnchorEpoch = epoch
-    clockAnchorTicks = time.ticks_ms()
-    clockEverSynced = True
-    # Coarse fallback for restored-ring aging. Not the live clock.
-    state_set('epochAnchor', epoch)
-
 def sync_clock():
     """Sync the wall clock from NTP. Best effort, never fatal, never raises.
 
@@ -1473,6 +1434,10 @@ def sync_clock():
     place: a stale clock beats no clock, and the entries stay tagged with
     their age since last sync through the heartbeat rather than silently
     presenting drift as truth.
+
+    Sets the RAM anchor through clockmod, then writes the coarse flash copy
+    (epochAnchor) here, since persistence is this side's concern, not the
+    pure clock module's.
     """
     global lastNtpSync
     if ntptime is None:
@@ -1501,8 +1466,12 @@ def sync_clock():
         append_to_log('NTP returned an implausible epoch; ignoring it')
         return False
     lastNtpSync = time.ticks_ms()
-    set_clock_anchor(epoch)
-    report('Clock synced: ' + format_timestamp(clock_now()))
+    clockmod.set_anchor(epoch)
+    # Coarse flash fallback for aging rings recovered after a reset. Written
+    # here, not in clockmod, which stays a pure leaf.
+    state_set('epochAnchor', epoch)
+    report('Clock synced: ' +
+           clockmod.format_timestamp(clockmod.clock_now(), utcOffset))
     return True
 
 def maybe_resync_clock():
@@ -1512,31 +1481,11 @@ def maybe_resync_clock():
     An unsynced clock retries every pass it can, which is cheap: the guards
     in sync_clock() return before any network work when WiFi is down.
     """
-    if not clockEverSynced:
+    if not clockmod.clockEverSynced:
         return sync_clock()
     if time.ticks_diff(time.ticks_ms(), lastNtpSync) < config.NTP_RESYNC_MS:
         return False
     return sync_clock()
-
-def format_timestamp(epoch):
-    """Render an epoch as 'YYYY-MM-DD HH:MM:SS +ZZZZ', local per utcOffset.
-
-    The stored epoch is UTC; the offset is applied here at display time only.
-    The trailing offset tag makes the applied zone explicit, so a fixed
-    offset that has fallen out of step with daylight saving is visible rather
-    than silently wrong.
-    """
-    if epoch is None:
-        return 'unsynced'
-    local = epoch + utcOffset
-    # time.gmtime on a UTC-plus-offset value yields local wall-clock parts
-    # without needing the port to know any timezone.
-    t = time.gmtime(local)
-    sign = '+' if utcOffset >= 0 else '-'
-    off = abs(utcOffset)
-    tag = '%s%02d%02d' % (sign, off // 3600, (off % 3600) // 60)
-    return '%04d-%02d-%02d %02d:%02d:%02d %s' % (
-        t[0], t[1], t[2], t[3], t[4], t[5], tag)
 
 def clock_status():
     """One-line clock state for the heartbeat.
@@ -1546,10 +1495,10 @@ def clock_status():
     hours ago is presenting an increasingly wrong time, and the heartbeat
     is where that should show.
     """
-    if not clock_is_live():
+    if not clockmod.clock_is_live():
         return 'unsynced (using relative time)'
     since = time.ticks_diff(time.ticks_ms(), lastNtpSync)
-    return format_timestamp(clock_now()) + \
+    return clockmod.format_timestamp(clockmod.clock_now(), utcOffset) + \
         ' (synced ' + format_uptime(since) + ' ago)'
 
 def current_epoch():
@@ -1559,7 +1508,7 @@ def current_epoch():
     and None when it is not: a ring caught before the first sync still has
     no knowable absolute time, and one restored from flash cannot be aged.
     """
-    return clock_now()
+    return clockmod.clock_now()
 
 def enqueue_ring(width):
     global queueDropped
@@ -1588,11 +1537,12 @@ def describe_delay(entry):
     epoch = entry[Q_EPOCH]
     if entry[Q_RESTORED]:
         if epoch is not None:
-            return ' (rang around ' + format_timestamp(epoch) + \
+            return ' (rang around ' + \
+                   clockmod.format_timestamp(epoch, utcOffset) + \
                    ', before a restart)'
         return ' (queued before a restart)'
     if epoch is not None:
-        return ' (' + format_timestamp(epoch) + ')'
+        return ' (' + clockmod.format_timestamp(epoch, utcOffset) + ')'
     age = time.ticks_diff(time.ticks_ms(), entry[Q_TICKS])
     if age < config.DELAY_NOTICE_MS:
         return ''

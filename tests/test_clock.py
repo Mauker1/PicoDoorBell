@@ -73,8 +73,8 @@ def fresh(offset=0):
 ####################################################################################
 
 m = fresh()
-check('clock is not live before any sync', m.clock_is_live(), False)
-check('clock_now is None before any sync', m.clock_now(), None)
+check('clock is not live before any sync', m.clockmod.clock_is_live(), False)
+check('clock_now is None before any sync', m.clockmod.clock_now(), None)
 check('current_epoch is None before any sync', m.current_epoch(), None)
 check('a ring before sync records no epoch',
       (lambda: (m.enqueue_ring(500), m.queue[0][m.Q_EPOCH])[1])(),
@@ -93,37 +93,39 @@ m = fresh()
 WLAN.connected = True
 clock[0] = 5000
 check('sync_clock reports success', m.sync_clock(), True)
-check('clock is live after sync', m.clock_is_live(), True)
-check('clock_now returns the synced epoch', m.clock_now(), WALL_MP)
+check('clock is live after sync', m.clockmod.clock_is_live(), True)
+check('clock_now returns the synced epoch', m.clockmod.clock_now(), WALL_MP)
 check('epoch persisted to flash for restored-ring aging',
       m.state_get('epochAnchor', None), WALL_MP)
 
 # The anchor plus elapsed ticks: 42 s later the clock reads 42 s on.
 clock[0] = 5000 + 42000
-check('clock advances with ticks', m.clock_now(), WALL_MP + 42)
+check('clock advances with ticks', m.clockmod.clock_now(), WALL_MP + 42)
 
 # And the log prefix is now a real timestamp, not a t-marked tick count.
 check('log prefix is absolute after sync',
       m.log_prefix()[:4], '2024')
 
 ####################################################################################
-# format_timestamp: UTC, and a fixed local offset from board.py.
+# format_timestamp: pure, takes the offset as an argument (defaults to UTC).
 ####################################################################################
 
-# format_timestamp is pure: it needs no live clock, only the utcOffset the
-# firmware was loaded with.
+# clockmod.format_timestamp is pure and needs no live clock: it takes the
+# epoch and the offset directly.
 m = fresh(offset=0)
 check('UTC timestamp formats as expected',
-      m.format_timestamp(WALL_MP), '2024-06-01 12:00:00 +0000')
-check('None formats as unsynced', m.format_timestamp(None), 'unsynced')
-
-m = fresh(offset=7200)          # CEST, +02:00
+      m.clockmod.format_timestamp(WALL_MP), '2024-06-01 12:00:00 +0000')
+check('None formats as unsynced', m.clockmod.format_timestamp(None), 'unsynced')
 check('positive offset shifts the displayed hour and tags the zone',
-      m.format_timestamp(WALL_MP), '2024-06-01 14:00:00 +0200')
-
-m = fresh(offset=-18000)        # -05:00, sign handling
+      m.clockmod.format_timestamp(WALL_MP, 7200), '2024-06-01 14:00:00 +0200')
 check('negative offset tags a minus zone',
-      m.format_timestamp(WALL_MP)[-5:], '-0500')
+      m.clockmod.format_timestamp(WALL_MP, -18000)[-5:], '-0500')
+
+# Integration: the board's utcOffset flows through log_prefix once synced.
+m = fresh(offset=7200)
+m.clockmod.set_anchor(WALL_MP)
+check('log_prefix applies the board offset after sync',
+      m.log_prefix().startswith('2024-06-01 14:'), True)
 
 ####################################################################################
 # Bad input never poisons the clock.
@@ -133,7 +135,7 @@ m = fresh()
 WLAN.connected = True
 Ntptime.next_epoch = 0           # a stalled read: below the sanity floor
 check('an implausible epoch is rejected', m.sync_clock(), False)
-check('a rejected sync leaves the clock unsynced', m.clock_is_live(), False)
+check('a rejected sync leaves the clock unsynced', m.clockmod.clock_is_live(), False)
 
 m = fresh()
 WLAN.connected = True
@@ -142,16 +144,16 @@ Ntptime.next_epoch = WALL_MP
 m.sync_clock()                   # establish a good anchor first
 Ntptime.next_epoch = 0           # then a bad read on the next attempt
 check('good anchor stands before the bad read',
-      m.clock_now(), WALL_MP)
+      m.clockmod.clock_now(), WALL_MP)
 check('a later bad read is rejected', m.sync_clock(), False)
 check('the earlier good anchor survives a bad read',
-      m.clock_is_live(), True)
+      m.clockmod.clock_is_live(), True)
 
 m = fresh()
 WLAN.connected = True
 Ntptime.raise_exc = True
 check('an NTP exception is caught, not raised', m.sync_clock(), False)
-check('a raised sync leaves the clock unsynced', m.clock_is_live(), False)
+check('a raised sync leaves the clock unsynced', m.clockmod.clock_is_live(), False)
 
 ####################################################################################
 # Sync requires a usable link.

@@ -316,4 +316,4 @@ def load_firmware():
 
 # First-party firmware modules that main imports. Dropped before each load so
 # their module-level state starts fresh. Extend as the E2 split adds modules.
-FIRMWARE_MODULES = ('main', 'config', 'wdt')
+FIRMWARE_MODULES = ('main', 'config', 'wdt', 'clockmod')
