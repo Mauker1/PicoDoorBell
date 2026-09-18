@@ -81,19 +81,46 @@ and does not happen in service.
 - After the firmware upgrade, production took one unattended reboot: `boot #6`,
   `verdict=watchdog wdt=0x1` (TIMER) at ~03:57 CEST, with the surge protector already
   installed. A surge protector cannot affect a watchdog bite, which is a loop stall, not a
-  supply event, so this reboot is untouched by it. No recurrence in the ~2 days since.
+  supply event, so this reboot is untouched by it.
+- Then a 7-day clean run on `boot #6` (flat memory, flash flat at 6), ended by `boot #7`,
+  `verdict=run-pin chip=RUN raw=0x00010000 cold` at ~09:25 CEST (last heartbeat 03:56, so it
+  happened in waking hours, not the small hours). This is the first in-service `run-pin`
+  event, and it is significant: the RUN fingerprint was calibrated on this exact hardware
+  (re-plugging the reset connector produced `verdict=run-pin chip=RUN raw=0x00010000`), so
+  the diagnosis is trustworthy. It happened with nobody touching the connector, which is
+  exactly the case the mechanical-contact hypotheses were falsified for. So RUN went low in
+  service by something other than connector travel: most likely a supply dip deep enough to
+  disturb the RUN line, or noise coupling onto it, plausibly correlated with a mains load
+  switched during waking hours. This is the event that justifies `G6`'s RUN conditioning
+  (100 nF + 10 kOhm), which the roadmap had parked pending exactly this data.
+  **Correlation:** the user reports this reboot happened roughly when they switched on their
+  work equipment (monitors, hub, chargers) on the same circuit. That is the original suspected
+  trigger, a switching mains load, and it suggests the `run-pin` reboot is the
+  supply/transient fault presenting on the RUN line rather than as a clean POR/BOD. It also
+  implies the surge protector is partial mitigation, not a full fix: it held for a small load
+  (the deliberate light-switch test) but a heavier, more inductive load got a transient
+  through to RUN. Single correlation, recall-bias class of evidence, and "roughly when" not
+  "exactly when" (no wall-clock log on production yet), so suggestive, not proven.
 - The router auto-updated at ~03:40 CEST one night. The bench (a different subnet, behind an
   inter-VLAN hop) lost its association and correctly announced a reconnect; production held
   its association throughout, its once-a-minute poll never faltering and no failure lines in
   the log across the window. Different networks, two truthful outcomes.
 
-**Working reading: two distinct faults, with asymmetric evidence.** A supply/transient fault
-(switch-correlated, would read `verdict=power`) that the surge protector plausibly addressed,
-and a watchdog/stall fault (`verdict=watchdog`, the 03:57 bite) that it cannot touch and that
-still lives in the firmware's request/DNS path. What confirms or refutes each over time: any
-future `verdict=power` reboot means the supply path is not fully solved; any future
-`verdict=watchdog` is the stall fault, unaffected by the power setup, and the one that would
-most benefit from `C1` on production so the next bite is legible against the wall clock.
+**Working reading: likely two faults, not three.** The `run-pin` event correlating with a
+switching load points to the supply/transient fault and the RUN-line fault being one and the
+same: a switching mains transient dips the rail and, on this event, pulled RUN low rather
+than tripping POR/BOD. That leaves two mechanisms: this switching/supply fault, whose
+targeted fix is `G6`'s RUN conditioning (100 nF + 10 kOhm) plus whatever supply smoothing the
+surge protector already gives (partial, since a heavy load still got through); and the
+watchdog/stall fault (`verdict=watchdog`, the 03:57 nighttime bite) that lives in the
+firmware's request/DNS path and that no power change can touch. What each future verdict would
+mean: a `run-pin` or `power` recurrence is the switching/supply fault, and building `G6` is
+the response; a `watchdog` recurrence is the stall fault. Evidence is still sparse (one event
+per verdict) and the switching correlation is recall-bias class, so these are working
+hypotheses, not conclusions. The recurring lesson is that reasoning about event timing from
+uptime arithmetic is painful, which is the standing argument for putting `C1` on production so
+every reboot is legible against the wall clock, and so the next switching event can be lined
+up against its exact timestamp.
 
 **Bench power reboots are a rig artifact, not part of this dataset.** The bench is fed through
 an Anker USB-C hub whose own power comes from the MacBook's PSU; when that PSU is interrupted,

@@ -37,7 +37,7 @@ def check(label, got, expected):
 
 
 def fresh():
-    """Import main and configure hardware, so m.led is the stub LED pin."""
+    """Import main and configure hardware, so m.led.led is the stub LED pin."""
     del events[:]
     del WDT.instances[:]
     mem32.cells.clear()
@@ -53,30 +53,30 @@ os.chdir(tempfile.mkdtemp())
 
 # --- 1. Steady states drive the right resting level ------------------------
 m = fresh()
-m.set_led_state(m.LED_CONNECTED)
-check('connected is solid on', m.led.value(), 1)
-check('connected is recorded as the state', m.ledState, m.LED_CONNECTED)
+m.led.set_led_state(m.led.LED_CONNECTED)
+check('connected is solid on', m.led.led.value(), 1)
+check('connected is recorded as the state', m.led.ledState, m.led.LED_CONNECTED)
 
-m.set_led_state(m.LED_OFF)
-check('off is solid off', m.led.value(), 0)
+m.led.set_led_state(m.led.LED_OFF)
+check('off is solid off', m.led.led.value(), 0)
 
-m.set_led_state(m.LED_CONNECTING)
-check('connecting has no solid on level', m.led.value(), 0)
+m.led.set_led_state(m.led.LED_CONNECTING)
+check('connecting has no solid on level', m.led.led.value(), 0)
 
-m.set_led_state(m.LED_ERROR)
-check('error has no solid on level', m.led.value(), 0)
-check('error is recorded as the state', m.ledState, m.LED_ERROR)
+m.led.set_led_state(m.led.LED_ERROR)
+check('error has no solid on level', m.led.led.value(), 0)
+check('error is recorded as the state', m.led.ledState, m.led.LED_ERROR)
 
 # --- 2. The inversion bug is fixed -----------------------------------------
 # The old handler did led.off(); wlan.disconnect(); ...; led.on(), leaving
 # the connected light on while disconnected. Two guards: the behaviour, and
 # the source, since this is a regression worth pinning both ways.
 m = fresh()
-m.set_led_state(m.LED_CONNECTED)
-check('starts connected', m.led.value(), 1)
+m.led.set_led_state(m.led.LED_CONNECTED)
+check('starts connected', m.led.led.value(), 1)
 # Simulate what the handler now does on a loop exception.
-m.set_led_state(m.LED_OFF)
-check('a disconnect leaves the LED off, not on', m.led.value(), 0)
+m.led.set_led_state(m.led.LED_OFF)
+check('a disconnect leaves the LED off, not on', m.led.led.value(), 0)
 
 src = open(SRC).read()
 # The loop's exception handler is the one that logs 'WiFi disconnected'.
@@ -90,39 +90,39 @@ check('no led.on() follows the disconnect in the handler',
 
 # --- 3. A discrete blink restores the steady state -------------------------
 m = fresh()
-m.set_led_state(m.LED_CONNECTED)
-m.led.levels.clear()
-m.blink_led(3)
-check('a 3-blink toggles the LED', m.led.levels.count(1) >= 3, True)
-check('and restores the connected level afterwards', m.led.value(), 1)
+m.led.set_led_state(m.led.LED_CONNECTED)
+m.led.led.levels.clear()
+m.led.blink_led(3)
+check('a 3-blink toggles the LED', m.led.led.levels.count(1) >= 3, True)
+check('and restores the connected level afterwards', m.led.led.value(), 1)
 
-m.set_led_state(m.LED_OFF)
-m.led.levels.clear()
-m.blink_led(2)
-check('a blink from off restores off afterwards', m.led.value(), 0)
+m.led.set_led_state(m.led.LED_OFF)
+m.led.led.levels.clear()
+m.led.blink_led(2)
+check('a blink from off restores off afterwards', m.led.led.value(), 0)
 
 # --- 4. The alert is a brief double-blink, then steady ---------------------
 m = fresh()
-m.set_led_state(m.LED_CONNECTED)
-m.led.levels.clear()
-m.led_alert()
-check('alert blinks at least twice', m.led.levels.count(1) >= 2, True)
-check('alert returns to the connected level', m.led.value(), 1)
+m.led.set_led_state(m.led.LED_CONNECTED)
+m.led.led.levels.clear()
+m.led.led_alert()
+check('alert blinks at least twice', m.led.led.levels.count(1) >= 2, True)
+check('alert returns to the connected level', m.led.led.value(), 1)
 
 # --- 5. Blinks are watchdog-safe -------------------------------------------
 # A long enough burst must feed, or a slow pattern could outlast the timeout.
 m = fresh()
 before = WDT.instances[0].feeds
-m.blink_led(5)
+m.led.blink_led(5)
 check('blinking feeds the watchdog', WDT.instances[0].feeds > before, True)
 
 # --- 6. Toggle flips the level ---------------------------------------------
 m = fresh()
-m.set_led_state(m.LED_OFF)
-m.led_toggle()
-check('toggle from off goes on', m.led.value(), 1)
-m.led_toggle()
-check('toggle from on goes off', m.led.value(), 0)
+m.led.set_led_state(m.led.LED_OFF)
+m.led.led_toggle()
+check('toggle from off goes on', m.led.led.value(), 1)
+m.led.led_toggle()
+check('toggle from on goes off', m.led.led.value(), 0)
 
 # --- 7. Connecting blinks while joining, solid on once connected -----------
 # The connect loop toggles the LED once per poll pass while the state is
@@ -141,36 +141,36 @@ def ticking_sleep(seconds):
 
 
 m.wdt.sleep_fed = ticking_sleep
-m.led.levels.clear()
+m.led.led.levels.clear()
 m.connect_wifi()
-check('the LED toggled while connecting', len(m.led.levels) > 1, True)
-check('and ends solid on once connected', m.led.value(), 1)
-check('and the state is connected', m.ledState, m.LED_CONNECTED)
+check('the LED toggled while connecting', len(m.led.led.levels) > 1, True)
+check('and ends solid on once connected', m.led.led.value(), 1)
+check('and the state is connected', m.led.ledState, m.led.LED_CONNECTED)
 
 # --- 8. A delivered ring blinks the alert ----------------------------------
 m = fresh()
 sent = []
 m.send_message = lambda chat, msg: (sent.append(msg), (m.REQUEST_OK, 200, {}))[1]
-m.set_led_state(m.LED_CONNECTED)
+m.led.set_led_state(m.led.LED_CONNECTED)
 m.enqueue_ring(2000)
-m.led.levels.clear()
+m.led.led.levels.clear()
 m.flush_queue()
 check('a delivered ring was sent', len(sent), 1)
-check('and blinked the alert', len(m.led.levels) > 0, True)
-check('the LED is back to connected after the alert', m.led.value(), 1)
+check('and blinked the alert', len(m.led.led.levels) > 0, True)
+check('the LED is back to connected after the alert', m.led.led.value(), 1)
 
 # A flush that delivers nothing does not blink.
 m = fresh()
-m.set_led_state(m.LED_CONNECTED)
-m.led.levels.clear()
+m.led.set_led_state(m.led.LED_CONNECTED)
+m.led.led.levels.clear()
 m.flush_queue()                 # empty queue
-check('an empty flush does not blink', m.led.levels, [])
+check('an empty flush does not blink', m.led.led.levels, [])
 
 # --- 9. error_halt records the error state ---------------------------------
 # error_halt loops forever, so it cannot be called; assert via source that it
 # sets the error state before entering the blink loop.
 check('error_halt sets the error state',
-      'set_led_state(LED_ERROR)' in src, True)
+      'set_led_state(led.LED_ERROR)' in src, True)
 
 # --- 10. LED failures never propagate --------------------------------------
 # The LED is feedback, never a reason to fail an operation.
@@ -188,13 +188,13 @@ class BrokenLED:
         raise OSError('LED gone')
 
 
-m.led = BrokenLED()
+m.led.led = BrokenLED()
 check('set_led_state swallows an LED failure',
-      (m.set_led_state(m.LED_CONNECTED), True)[1], True)
+      (m.led.set_led_state(m.led.LED_CONNECTED), True)[1], True)
 check('blink_led swallows an LED failure',
-      (m.blink_led(2), True)[1], True)
+      (m.led.blink_led(2), True)[1], True)
 check('toggle swallows an LED failure',
-      (m.led_toggle(), True)[1], True)
+      (m.led.led_toggle(), True)[1], True)
 
 print()
 print('%d/%d passed' % (sum(results), len(results)))
