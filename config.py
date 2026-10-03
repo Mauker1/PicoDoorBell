@@ -31,7 +31,7 @@ LOG_CHUNK_CHARS = 3500       # under Telegram's 4096 limit, with room for markup
 # into the MicroPython epoch once here.
 EPOCH_2000_OFFSET = 946684800
 NTP_TIMEOUT_S = 2
-NTP_RESYNC_MS = 43200000     # twelve hours; tighter than drift needs, cheap
+NTP_RESYNC_MS = 43200000     # twelve hours; also the epochAnchor flash write rate
 EPOCH_SANITY_FLOOR = 1577836800          # 2020-01-01 UTC, Unix epoch
 EPOCH_SANITY_FLOOR_MP = EPOCH_SANITY_FLOOR - EPOCH_2000_OFFSET
 
