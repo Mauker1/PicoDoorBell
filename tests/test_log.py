@@ -26,6 +26,8 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, '..', 'main.py')
+# The buffer lives in applog since E2; main still sends it. Check both.
+LOG_SOURCES = (SRC, os.path.join(HERE, '..', 'applog.py'))
 sys.path.insert(0, os.path.join(HERE, '..'))
 sys.path.insert(0, HERE)
 import stubs
@@ -67,36 +69,36 @@ os.chdir(tempfile.mkdtemp())
 
 # --- 1. Bounded by line count, keeping the newest --------------------------
 m = fresh()
-del m.logLines[:]
+del m.applog.logLines[:]
 for i in range(m.config.LOG_MAX_LINES + 50):
-    m.append_to_log('entry %d' % i)
-check('log stops growing', len(m.logLines), m.config.LOG_MAX_LINES)
+    m.applog.append_to_log('entry %d' % i)
+check('log stops growing', len(m.applog.logLines), m.config.LOG_MAX_LINES)
 check('the newest entry is kept',
-      'entry %d' % (m.config.LOG_MAX_LINES + 49) in m.logLines[-1], True)
+      'entry %d' % (m.config.LOG_MAX_LINES + 49) in m.applog.logLines[-1], True)
 check('the oldest is gone',
-      any('entry 0 ' in line for line in m.logLines), False)
+      any('entry 0 ' in line for line in m.applog.logLines), False)
 
 # --- 2. An empty log says so -----------------------------------------------
 m = fresh()
-del m.logLines[:]
+del m.applog.logLines[:]
 m.print_log('chat')
 check('an empty log is reported, not sent blank', sent[0], 'Log is empty.')
 
 # --- 3. A short log goes in one message ------------------------------------
 m = fresh()
-del m.logLines[:]
-m.append_to_log('hello')
+del m.applog.logLines[:]
+m.applog.append_to_log('hello')
 m.print_log('chat')
 check('one message for a short log', len(sent), 1)
-check('log cleared after a successful send', len(m.logLines), 1)
+check('log cleared after a successful send', len(m.applog.logLines), 1)
 
 # --- 4. A long log is chunked under Telegram's limit -----------------------
 # The regression: one 10000-character message is an unconditional 400.
 m = fresh()
-del m.logLines[:]
+del m.applog.logLines[:]
 for i in range(m.config.LOG_MAX_LINES):
-    m.append_to_log('a fairly long log line number %d, padded out %s' % (i, 'x' * 60))
-total = len(m.log_text())
+    m.applog.append_to_log('a fairly long log line number %d, padded out %s' % (i, 'x' * 60))
+total = len(m.applog.log_text())
 check('the log exceeds a single message', total > 4096, True)
 
 m.print_log('chat')
@@ -105,30 +107,33 @@ check('every chunk fits Telegram',
       max(len(msg) for msg in sent) <= 4096, True)
 check('nothing was dropped between chunks',
       sum(len(msg) for msg in sent) >= total - len(sent), True)
-check('log cleared once it all landed', len(m.logLines), 1)
+check('log cleared once it all landed', len(m.applog.logLines), 1)
 
 # --- 5. A failed send keeps the log ----------------------------------------
 # The old code cleared it regardless, destroying exactly what had failed to
 # send.
 m = fresh()
-del m.logLines[:]
+del m.applog.logLines[:]
 for i in range(20):
-    m.append_to_log('entry %d' % i)
-before = len(m.logLines)
+    m.applog.append_to_log('entry %d' % i)
+before = len(m.applog.logLines)
 m.send_message = make_sender(m, fail=True)
 m.print_log('chat')
 # The failure itself is logged, so the count grows rather than resetting.
-check('a log that failed to send is kept', len(m.logLines) >= before, True)
-check('and it was not reset to a single line', len(m.logLines) > 1, True)
+check('a log that failed to send is kept', len(m.applog.logLines) >= before, True)
+check('and it was not reset to a single line', len(m.applog.logLines) > 1, True)
 
 # --- 6. Appending does not rebuild the whole buffer ------------------------
 # Structural, via AST so comments explaining the old bug do not match: no
 # augmented assignment to a module-level log string anywhere.
-tree = ast.parse(open(SRC).read())
-concats = [n.lineno for n in ast.walk(tree)
-           if isinstance(n, ast.AugAssign)
-           and isinstance(n.target, ast.Name)
-           and n.target.id in ('log', 'logLines')]
+concats = []
+for path in LOG_SOURCES:
+    tree = ast.parse(open(path).read())
+    concats += [(os.path.basename(path), n.lineno) for n in ast.walk(tree)
+                if isinstance(n, ast.AugAssign)
+                and isinstance(n.target, (ast.Name, ast.Attribute))
+                and getattr(n.target, 'id', getattr(n.target, 'attr', None))
+                in ('log', 'logLines')]
 check('no string concatenation onto the log', concats, [])
 
 print()

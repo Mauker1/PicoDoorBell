@@ -50,6 +50,7 @@ import config
 import wdt
 import clockmod
 import led
+import applog
 from secrets import secrets
 
 ####################################################################################
@@ -102,6 +103,7 @@ wifiPowerSave = getattr(board, 'wifiPowerSave', False)
 # every timestamp is tagged with the offset it used (for example +0000) so any
 # such choice stays visible rather than silent.
 utcOffset = getattr(board, 'utcOffset', 0)
+applog.utcOffset = utcOffset
 
 # Newer builds name this; older ones only take the magic number.
 WIFI_PM_NONE = getattr(network.WLAN, 'PM_NONE', 0xa11140)
@@ -126,13 +128,7 @@ chatId = secrets['telegramDmUid']
 
 # Messages and commands now live in config.py.
 
-# In memory log
-# Kept as a list of lines, never as one growing string. `log += entry`
-# reallocates the whole buffer on every append; a few hundred appends during
-# an outage means a few hundred multi-kilobyte allocations and frees, which
-# fragments a 264 KB heap. TLS handshakes need large contiguous blocks, so
-# the symptom is sends beginning to fail while everything small still works.
-logLines = []
+# The in-memory log lives in applog.py.
 
 # Wifi connection status
 wifiData = ''
@@ -424,7 +420,7 @@ def note_request_result(outcome):
     now = time.ticks_ms()
     if outcome == REQUEST_OK:
         if networkFailures:
-            report('Network recovered after ' + str(networkFailures) +
+            applog.report('Network recovered after ' + str(networkFailures) +
                    ' failure(s)')
         networkFailures = 0
         networkBackoffMs = 0
@@ -469,11 +465,11 @@ def bounce_wifi():
     networkBounced = True
     networkFailures = 0
     networkBackoffMs = 0
-    report('Network unresponsive while associated; bouncing the link')
+    applog.report('Network unresponsive while associated; bouncing the link')
     try:
         wlan.disconnect()
     except Exception as e:
-        report('WiFi disconnect failed: ' + str(e))
+        applog.report('WiFi disconnect failed: ' + str(e))
     wdt.sleep_fed(2)
     connect_wifi()
 
@@ -513,7 +509,7 @@ def do_request(method, url, payload=None):
                 # This urequests build has no timeout parameter. Note it once
                 # and fall through to the untimed call below.
                 requestsTimeoutSupported = False
-                append_to_log('urequests has no timeout support; '
+                applog.append_to_log('urequests has no timeout support; '
                               'the watchdog is the only backstop')
         if response is None and not requestsTimeoutSupported:
             if method == 'POST':
@@ -538,7 +534,7 @@ def do_request(method, url, payload=None):
         # The backoff is stated because it is otherwise invisible: requests
         # skipped while it runs print nothing at all, so a quiet log looks
         # the same whether nothing was tried or nothing failed.
-        report('HTTP ' + method + ' failed: ' + str(e) +
+        applog.report('HTTP ' + method + ' failed: ' + str(e) +
                ' (next attempt in ' + str(networkBackoffMs // 1000) + 's)')
         return (REQUEST_RETRY, 0, None)
     finally:
@@ -561,7 +557,7 @@ def send_message (chatId, message):
     outcome, status, body = do_request('POST', sendURL, param)
     if outcome not in (REQUEST_OK, REQUEST_SKIPPED) and status != 0:
         # status 0 means do_request already reported the transport error.
-        report('sendMessage failed: ' + describe_api_error(status, body))
+        applog.report('sendMessage failed: ' + describe_api_error(status, body))
     return (outcome, status, body)
 
 def discard_update_backlog():
@@ -584,7 +580,7 @@ def discard_update_backlog():
         return False
     if results:
         updateId = results[-1]['update_id'] + 1
-        report('Discarded ' + str(len(results)) + ' stale update(s)')
+        applog.report('Discarded ' + str(len(results)) + ' stale update(s)')
     return True
 
 def read_message(chatId):
@@ -602,7 +598,7 @@ def read_message(chatId):
         # status 0 means do_request already reported the transport error
         # with its errno; repeating it as 'status=0' adds nothing.
         if status != 0:
-            append_to_log('getUpdates failed: ' +
+            applog.append_to_log('getUpdates failed: ' +
                           describe_api_error(status, body))
         return
     for result in body['result']:
@@ -613,48 +609,6 @@ def read_message(chatId):
         elif (command == config.statusCommand):
             send_message(chatId, heartbeat_text())
 
-def report(message):
-    """Log it and say it.
-
-    append_to_log() alone writes to a buffer nobody is watching. Several
-    events that only matter while someone is looking -- ring widths,
-    rejected transients, the stability write -- were invisible on the
-    console because of that.
-    """
-    print(message)
-    append_to_log(message)
-
-def log_prefix():
-    """Timestamp prefix for a log line.
-
-    A real wall-clock time once C1 has synced; otherwise the ticks_ms value
-    tagged with a leading 't' so a relative stamp can never be mistaken for
-    an absolute one. This is the roadmap's "mark those entries as such": a
-    log spanning a sync shows exactly where real time began.
-    """
-    epoch = clockmod.clock_now()
-    if epoch is not None:
-        return clockmod.format_timestamp(epoch, utcOffset)
-    return 't' + str(time.ticks_ms())
-
-def append_to_log(message):
-    """Append, dropping the oldest lines once full.
-
-    Previously this refused new entries at the limit, which preserved the
-    *least* recent events and printed a full-log notice on every call. A
-    long outage therefore filled the log with the start of the outage,
-    discarded the errors that explained it, and buried the console in
-    notices. Exactly backwards for diagnosis.
-    """
-    logLines.append(log_prefix() + ' ' + message)
-    while len(logLines) > config.LOG_MAX_LINES:
-        # Drop the oldest. Refusing new entries instead, as this once did,
-        # preserves the least recent events -- backwards for diagnosis.
-        logLines.pop(0)
-
-def log_text():
-    return '\n'.join(logLines)
-
 def print_log(chatId):
     """Send the log, in pieces, and clear it only once it has all landed.
 
@@ -662,11 +616,15 @@ def print_log(chatId):
     reach 10000, so a full log was an unconditional 400 -- and the old code
     then cleared it anyway, destroying the thing that had just failed to
     send. Observed: /log worked early on and stopped once the log filled.
+
+    Stays with the network side: applog holds the buffer and its bound,
+    while sending it and deciding when to clear it are this caller's
+    policy. The seed line for the cleared log is the WiFi status.
     """
-    if not logLines:
+    if not applog.logLines:
         send_message(chatId, 'Log is empty.')
         return True
-    pending = log_text()
+    pending = applog.log_text()
     while pending:
         chunk = pending[:config.LOG_CHUNK_CHARS]
         if len(pending) > config.LOG_CHUNK_CHARS:
@@ -677,18 +635,13 @@ def print_log(chatId):
         if outcome != REQUEST_OK:
             # Keep everything. A log that failed to send is exactly the log
             # someone needs.
-            report('Log send failed; keeping it')
+            applog.report('Log send failed; keeping it')
             return False
         pending = pending[len(chunk):]
         if pending[:1] == '\n':
             pending = pending[1:]
-    reset_log()
+    applog.reset_log(wifiData)
     return True
-
-def reset_log():
-    global wifiData
-    del logLines[:]
-    logLines.append(log_prefix() + ' ' + wifiData)
 
 ####################################################################################
 # Tier 2 persistence.
@@ -699,6 +652,10 @@ def reset_log():
 # destroys a sector in about 69 days.
 #
 # THE RULE: never write flash on a timer. Only on a real state transition.
+#
+# One deliberate exception: each NTP resync (every NTP_RESYNC_MS, twelve
+# hours) refreshes the coarse epochAnchor copy. Bounded at two writes a day,
+# it is negligible for wear and keeps restored ring aging fresh.
 #
 # Tier 0 (log, counters, live queue) stays in RAM and is never persisted.
 # Tier 1 (reset reason, boot count) belongs in the watchdog scratch registers.
@@ -761,7 +718,7 @@ def load_state():
     # happened, so state.json is still the last good copy; drop the scrap.
     try:
         os.remove(STATE_TMP)
-        append_to_log('Discarded stale ' + STATE_TMP)
+        applog.append_to_log('Discarded stale ' + STATE_TMP)
     except OSError:
         pass
 
@@ -776,14 +733,14 @@ def load_state():
         # No state file: first boot, or nothing has ever needed persisting.
         return default_state()
     except ValueError:
-        append_to_log('State file corrupt, falling back to defaults')
+        applog.append_to_log('State file corrupt, falling back to defaults')
         return default_state()
 
     if state_is_future(raw):
         # Written by newer firmware. Do not guess at its schema and do not
         # overwrite it -- the user may simply have rolled back.
         stateWritable = False
-        append_to_log('State file is newer than firmware; running read-only')
+        applog.append_to_log('State file is newer than firmware; running read-only')
         return default_state()
 
     migrated = migrate_state(raw)
@@ -791,7 +748,7 @@ def load_state():
         # Structurally wrong but syntactically valid, e.g. a bare list.
         # Nothing meaningful to preserve, so stay writable and let the
         # next real transition overwrite it.
-        append_to_log('State file unusable, falling back to defaults')
+        applog.append_to_log('State file unusable, falling back to defaults')
         return default_state()
     return migrated
 
@@ -816,7 +773,7 @@ def save_state():
         os.rename(STATE_TMP, STATE_PATH)
         return True
     except OSError as e:
-        append_to_log('State save failed: ' + str(e))
+        applog.append_to_log('State save failed: ' + str(e))
         if f is not None:
             try:
                 f.close()
@@ -1094,7 +1051,7 @@ def self_reset(reason, code=0):
     self-reset, and the explanation is destroyed every few minutes by the
     very reset it caused.
     """
-    report('Resetting: ' + reason)
+    applog.report('Resetting: ' + reason)
     try:
         scratch_write(SCRATCH_REASON_IDX, code)
     except Exception:
@@ -1133,7 +1090,7 @@ def connect_wifi():
             status = wlan.ifconfig()
             print('ip = ' + status[0])
             wifiData = 'WiFi connected. IP: ' + status[0]
-            append_to_log(wifiData)
+            applog.append_to_log(wifiData)
             # A fresh link deserves a fresh grace period; otherwise the first
             # failure after a long outage looks like a dead network.
             lastNetworkSuccess = time.ticks_ms()
@@ -1157,12 +1114,12 @@ def connect_wifi():
                 self_reset('WiFi unreachable after ' + str(attempts - 1) +
                            ' attempts', REASON_WIFI)
             led.set_led_state(led.LED_CONNECTING)
-            report('WiFi down (' + wifi_status_name(status) +
+            applog.report('WiFi down (' + wifi_status_name(status) +
                    '), attempt ' + str(attempts))
             try:
                 wlan.connect(ssid, pw)
             except OSError as e:
-                report('WiFi connect failed: ' + str(e))
+                applog.report('WiFi connect failed: ' + str(e))
             issuedAt = now
 
         wdt.sleep_fed(config.WIFI_POLL_MS / 1000.0)
@@ -1213,7 +1170,7 @@ def flush_announcement():
         pendingAnnouncement = None
         return True
     if outcome == REQUEST_FATAL:
-        report('Announcement undeliverable; dropping it')
+        applog.report('Announcement undeliverable; dropping it')
         pendingAnnouncement = None
     return False
 
@@ -1299,7 +1256,7 @@ def process_input(entry):
     elif time.ticks_diff(now, entry[IN_RISE]) > config.STUCK_INPUT_MS:
         # Still high long after any real ring would have ended.
         entry[IN_PENDING] = False
-        report(entry[IN_NAME] + ' input stuck high')
+        applog.report(entry[IN_NAME] + ' input stuck high')
         return
     else:
         # Mid-pulse. Leave it latched and look again next pass.
@@ -1309,7 +1266,7 @@ def process_input(entry):
 
     if width < config.MIN_PULSE_MS:
         entry[IN_REJECTED] += 1
-        report(entry[IN_NAME] + ' transient ignored, ' + str(width) + 'ms')
+        applog.report(entry[IN_NAME] + ' transient ignored, ' + str(width) + 'ms')
         return
 
     if was_unpollable(entry):
@@ -1322,7 +1279,7 @@ def process_input(entry):
 
     entry[IN_RINGS] += 1
     entry[IN_LAST_ALERT] = now
-    report(entry[IN_NAME] + ' ring, ' + str(width) + 'ms')
+    applog.report(entry[IN_NAME] + ' ring, ' + str(width) + 'ms')
     # Queued rather than sent. Delivery is the queue's job, and a ring is
     # not discarded until Telegram confirms it.
     enqueue_ring(width)
@@ -1356,28 +1313,31 @@ def sync_clock():
     try:
         epoch = ntptime.time()
     except Exception as e:
-        append_to_log('NTP sync failed: ' + str(e))
+        applog.append_to_log('NTP sync failed: ' + str(e))
         wdt.feed_watchdog()
         return False
     wdt.feed_watchdog()
     if epoch < config.EPOCH_SANITY_FLOOR_MP:
         # A stalled read can return 0 or a tiny value. Anchoring to that
         # would date every ring to the epoch, which is worse than no clock.
-        append_to_log('NTP returned an implausible epoch; ignoring it')
+        applog.append_to_log('NTP returned an implausible epoch; ignoring it')
         return False
     lastNtpSync = time.ticks_ms()
     clockmod.set_anchor(epoch)
     # Coarse flash fallback for aging rings recovered after a reset. Written
     # here, not in clockmod, which stays a pure leaf.
     state_set('epochAnchor', epoch)
-    report('Clock synced: ' +
+    applog.report('Clock synced: ' +
            clockmod.format_timestamp(clockmod.clock_now(), utcOffset))
     return True
 
 def maybe_resync_clock():
     """Resync on the timer, or take a first sync as soon as one is possible.
 
-    Timer-gated like the heartbeat and NTP-only, so it never touches flash.
+    Timer-gated like the heartbeat. Each successful resync refreshes the
+    coarse epochAnchor copy through set_clock_anchor(), so it costs one flash
+    write per NTP_RESYNC_MS of uptime: the one deliberate exception to the
+    Tier 2 rule, see the persistence section.
     An unsynced clock retries every pass it can, which is cheap: the guards
     in sync_clock() return before any network work when WiFi is down.
     """
@@ -1417,7 +1377,7 @@ def enqueue_ring(width):
         # one at the door now.
         queue.pop(0)
         queueDropped += 1
-        append_to_log('Queue full, dropped the oldest ring')
+        applog.append_to_log('Queue full, dropped the oldest ring')
     queue.append([time.ticks_ms(), width, current_epoch(), False])
     if networkFailures:
         # The network is already failing, so this ring may sit here a while
@@ -1466,7 +1426,7 @@ def flush_queue():
             # Retrying will not help. Drop it rather than block the queue
             # behind something permanently undeliverable.
             queue.pop(0)
-            report('Dropped an undeliverable ring: ' +
+            applog.report('Dropped an undeliverable ring: ' +
                    describe_api_error(status, body))
         else:
             # Transient or rate limited. Leave it and try again next pass.
@@ -1516,7 +1476,7 @@ def restore_queue():
         except (IndexError, TypeError):
             continue
         queue.append([now, width, epoch, True])
-    report('Recovered ' + str(len(queue)) + ' undelivered ring(s)')
+    applog.report('Recovered ' + str(len(queue)) + ' undelivered ring(s)')
 
 def poll_inputs():
     for entry in inputs:
@@ -1678,7 +1638,7 @@ def mark_boot_stable():
         pass
     # The only flash write in normal operation; a silent one is hard to
     # confirm while validating.
-    report('Boot ' + str(bootNumber) + ' stable after ' +
+    applog.report('Boot ' + str(bootNumber) + ' stable after ' +
            str(config.BOOT_STABLE_MS // 1000) + 's')
 
 def boot():
@@ -1708,7 +1668,7 @@ def boot():
         state = load_state()
     except Exception as e:
         state = default_state()
-        append_to_log('State load failed, using defaults: ' + str(e))
+        applog.append_to_log('State load failed, using defaults: ' + str(e))
         print('State load failed, using defaults: ' + str(e))
 
     # The running total lives in flash, so it is only knowable once state
@@ -1722,14 +1682,14 @@ def boot():
 
     summary = format_reset_info(resetInfo)
     print(summary)
-    append_to_log(summary)
+    applog.append_to_log(summary)
 
     # Everything that could legitimately hang from here on is network work.
     # arm_watchdog returns its status rather than logging, to stay a leaf;
     # report it here.
     armMessage = wdt.arm_watchdog()
     if armMessage:
-        report(armMessage)
+        applog.report(armMessage)
 
     try:
         connect_wifi()
@@ -1744,7 +1704,7 @@ def boot():
         announce_startup()
     except Exception as e:
         # Network trouble is the main loop's problem, not a boot failure.
-        append_to_log('Startup networking failed: ' + str(e))
+        applog.append_to_log('Startup networking failed: ' + str(e))
         print('Startup networking failed: ' + str(e))
 
 # Entry-point guard. On the device main.py is __main__, so boot() runs and
@@ -1774,7 +1734,7 @@ if __name__ == '__main__':
             if (time.ticks_diff(time.ticks_ms(), lastLogCheck) > config.logCheckInterval):
                 # Log only. Printed once a minute it was pure noise, and it
                 # crowded out the events worth seeing in a long run.
-                append_to_log('Checking for new messages')
+                applog.append_to_log('Checking for new messages')
                 read_message(chatId)
                 lastLogCheck = time.ticks_ms()
 
@@ -1811,7 +1771,7 @@ if __name__ == '__main__':
             # calls connect_wifi(), which drives the LED back through
             # connecting to connected on its own.
             led.set_led_state(led.LED_OFF)
-            append_to_log('WiFi disconnected: ' + str(e))
+            applog.append_to_log('WiFi disconnected: ' + str(e))
             # Grace period, in fed slices. Left as a single sleep(10) this
             # would outlast the watchdog and reset the board on every error.
             wdt.sleep_fed(10)

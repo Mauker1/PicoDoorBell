@@ -687,11 +687,11 @@ them.
 | `wdt.py` | The watchdog and `sleep_fed`: the "do not starve the dog" primitive | - |
 | `clockmod.py` | C1 anchor plus `clock_now`, `format_timestamp`, `clock_is_live`: pure time math | - |
 | `led.py` | G1 LED state machine | wdt |
-| `applog.py` | `logLines`, `append_to_log`, `report`, `print_log`, `log_prefix` | config, clockmod |
+| `applog.py` | `logLines`, `append_to_log`, `report`, `log_text`, `reset_log`, `log_prefix` | config, clockmod |
 | `persist.py` | `state.json`, the tier rules, atomic write | applog |
 | `resets.py` | Scratch registers, `read_reset_info`, verdicts | applog, persist |
 | `net.py` | WiFi connect/bounce, `do_request`, backoff | config, applog, wdt, led |
-| `telegram.py` | `send_message`, `read_message`, commands, ring queue, `sync_clock` | net, applog, persist, clockmod, led |
+| `telegram.py` | `send_message`, `read_message`, commands (including `print_log`), ring queue, `sync_clock` | net, applog, persist, clockmod, led |
 | `doorbell.py` | Input records, IRQ handlers, pulse judging | config, applog |
 | `main.py` | `boot()`, the loop, wiring | everything |
 
@@ -712,6 +712,15 @@ and B6 are written.
 runs blink bursts; the policy (connecting while joining, alert on delivery) stays with the
 callers in `net.py` and `telegram.py`. Same principle as doorbell: mechanism here, policy
 there.
+
+`applog.py` deliberately does **not** send, and reads nothing from `main`. It holds the
+buffer, its bound, the timestamp prefix and the append and report primitives. `print_log`,
+the `/log` command, stays with the network side (in `main` until `telegram.py` exists): it
+needs `send_message`, and chunking under Telegram's limit and clearing only after a full send
+are transport policy. Moving it would point a dependency upward and make a cycle. The two
+values `applog` once read from `main` are injected instead: `reset_log(header)` takes the seed
+line for a cleared log (the WiFi status), and `main` sets `applog.utcOffset` once at import,
+so `main` stays the single reader of `board.py`.
 
 **Functions, not classes: decided.** MicroPython charges for every class and instance, and
 there is exactly one of each thing here: one input list, one queue, one log. Classes would
@@ -1105,6 +1114,12 @@ reset-surviving storage, reachable via `machine.mem32` at the watchdog base.
 > hardware reset clears them, RUN included, not only power loss, as first assumed.
 
 **The one rule that matters: never write flash on a timer.** Everything else follows.
+
+One deliberate exception: each NTP resync (every 12 hours, C1) refreshes the coarse
+`epochAnchor` copy in `state.json`. Bounded at two writes a day, it is negligible for wear
+and keeps restored ring aging fresh. The steady state wear model is therefore two writes
+per boot (stable boot counter plus first sync) plus one per 12 hours of uptime, confirmed
+against the production `Flash writes` counter across boots #10 to #15.
 
 ### ✅ I2: Atomic write helper (P1)
 One function, one file, one write. Serialize all Tier 2 state together, write to

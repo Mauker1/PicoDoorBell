@@ -83,7 +83,7 @@ check('a ring before sync records no epoch',
 # log_prefix marks a relative stamp so it can never pass for an absolute one.
 clock[0] = 3847221
 check('log prefix is marked relative before sync',
-      m.log_prefix(), 't3847221')
+      m.applog.log_prefix(), 't3847221')
 
 ####################################################################################
 # A good sync anchors the clock.
@@ -104,7 +104,7 @@ check('clock advances with ticks', m.clockmod.clock_now(), WALL_MP + 42)
 
 # And the log prefix is now a real timestamp, not a t-marked tick count.
 check('log prefix is absolute after sync',
-      m.log_prefix()[:4], '2024')
+      m.applog.log_prefix()[:4], '2024')
 
 ####################################################################################
 # format_timestamp: pure, takes the offset as an argument (defaults to UTC).
@@ -125,7 +125,7 @@ check('negative offset tags a minus zone',
 m = fresh(offset=7200)
 m.clockmod.set_anchor(WALL_MP)
 check('log_prefix applies the board offset after sync',
-      m.log_prefix().startswith('2024-06-01 14:'), True)
+      m.applog.log_prefix().startswith('2024-06-01 14:'), True)
 
 ####################################################################################
 # Bad input never poisons the clock.

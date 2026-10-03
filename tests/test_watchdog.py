@@ -214,12 +214,12 @@ check('the first remedy is a bounce, not a reset',
 check('nothing was reset yet', 'machine_reset' in events, False)
 
 # The bounce keeps the log, the queue and the uptime.
-lines_before = len(m.logLines)
+lines_before = len(m.applog.logLines)
 m.wdt.sleep_fed = lambda s: None
 m.bounce_wifi()
 check('the bounce clears the request', m.networkBounceRequested, False)
 check('and records that it was tried', m.networkBounced, True)
-check('the log survives a bounce', len(m.logLines) >= lines_before, True)
+check('the log survives a bounce', len(m.applog.logLines) >= lines_before, True)
 
 # Still failing after a bounce: now a reset is the only local action left.
 try:

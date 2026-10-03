@@ -154,6 +154,12 @@ all, and getting it wrong destroys hardware.
 
 Everything else in this section is a consequence of that one rule.
 
+There is one deliberate exception. Each NTP resync, every `NTP_RESYNC_MS` (12
+hours), refreshes the coarse `epochAnchor` copy through `set_clock_anchor()`.
+Bounded at two writes a day, it is negligible for wear and keeps restored ring
+aging fresh. The steady state wear model is two writes per boot (stable boot
+counter plus first sync) plus one per 12 hours of uptime.
+
 ### Why the tiers exist
 
 Flash endurance on the Pico W is about **write frequency, not write size**. The
@@ -695,6 +701,15 @@ watching, such as ring widths, rejected transients and the stability write, were
 to the in-memory log alone and were invisible on the console. `append_to_log()`
 remains for things nobody needs to watch happen.
 
+### Where the log lives
+
+The buffer and its primitives (`logLines`, `append_to_log()`, `report()`,
+`log_prefix()`, `reset_log()`) live in `applog.py`, which never sends and reads
+nothing from `main`. Sending the log is `print_log()`'s job, on the network
+side, because chunking and clear-after-send are transport policy. A cleared
+log is seeded with a header line the caller passes in (the WiFi status), and
+the display offset is set once by `main` at import.
+
 ### Counting what polling would have lost
 
 A missed ring is unobservable, so the firmware counts the cases instead. When a
@@ -835,7 +850,7 @@ last sync so drift is visible.
 | Site | Behaviour |
 | --- | --- |
 | Boot | Synced after `connect_wifi()`, before `announce_startup()`, so the startup message and its reset diagnosis carry a real time |
-| Main loop | `maybe_resync_clock()` takes the first sync as soon as the link allows, then resyncs on a timer; NTP-only, never flash |
+| Main loop | `maybe_resync_clock()` takes the first sync as soon as the link allows, then resyncs on a timer; each resync refreshes the flash `epochAnchor` copy, the one timed write (see *The rule*) |
 | Log lines | Real timestamp once synced, `t`-marked ticks before |
 | Delivered rings | The ring's wall-clock time when known, tagged approximate when restored, the old relative wording when no epoch exists |
 | Heartbeat | A `Clock:` line: the current time and how long since the last sync, or `unsynced` |
@@ -1255,7 +1270,8 @@ details are read.
 
 | File | Purpose |
 | --- | --- |
-| `main.py` | Firmware |
+| `main.py` | Firmware: boot, the main loop, and the wiring between modules |
+| `config.py`, `wdt.py`, `clockmod.py`, `led.py`, `applog.py` | Firmware modules split out of `main.py` (E2). All must be on the device; a missing one is an ImportError at boot. |
 | `board.py` | Pin assignments for this board. Copied from `boards/` at install time. |
 | `secrets.py` | Credentials and chat configuration. User-edited, never written by the firmware. |
 | `state.json` | Tier 2 runtime state. Firmware-written, never user-edited. |
