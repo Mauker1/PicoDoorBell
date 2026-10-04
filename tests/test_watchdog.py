@@ -190,7 +190,7 @@ check('a hopeless outage ends in a reset', 'machine_reset' in events, True)
 check('attempts are bounded',
       events.count('wlan_connect') <= m2.config.WIFI_MAX_ATTEMPTS, True)
 check('the reset is marked as self-inflicted',
-      mem32[0x40058000 + 0x0c + 4], m2.SCRATCH_INTENT)
+      mem32[0x40058000 + 0x0c + 4], m2.resets.SCRATCH_INTENT)
 WLAN.connected = True
 
 # --- 4d. An associated but dead stack must be detected ---------------------
@@ -261,18 +261,18 @@ Requests.raise_oserror = False
 # A reset reason survives the reset it describes, since the log does not.
 m = fresh()
 try:
-    m.self_reset('testing', m.REASON_WIFI)
+    m.self_reset('testing', m.resets.REASON_WIFI)
 except stubs.ResetCalled:
     pass
 check('the reason is left in scratch 0',
-      mem32[0x40058000 + 0x0c], m.REASON_WIFI)
+      mem32[0x40058000 + 0x0c], m.resets.REASON_WIFI)
 
-info = m.read_reset_info()
+info = m.resets.read_reset_info()
 check('and is read back on the next boot',
       info['resetReason'], 'WiFi unreachable')
 check('then cleared', mem32[0x40058000 + 0x0c], 0)
 check('and it reaches the summary',
-      'reason=WiFi_unreachable' in m.format_reset_info(info), True)
+      'reason=WiFi_unreachable' in m.resets.format_reset_info(info), True)
 
 # Failures back off instead of retrying every pass.
 m = fresh()

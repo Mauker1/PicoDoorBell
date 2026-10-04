@@ -689,7 +689,7 @@ them.
 | `led.py` | G1 LED state machine | wdt |
 | `applog.py` | `logLines`, `append_to_log`, `report`, `log_text`, `reset_log`, `log_prefix` | config, clockmod |
 | `persist.py` | `state.json`, the tier rules, atomic write | applog |
-| `resets.py` | Scratch registers, `read_reset_info`, verdicts | applog, persist |
+| `resets.py` | Scratch registers, `read_reset_info`, verdicts | - |
 | `net.py` | WiFi connect/bounce, `do_request`, backoff | config, applog, wdt, led |
 | `telegram.py` | `send_message`, `read_message`, commands (including `print_log`), ring queue, `sync_clock` | net, applog, persist, clockmod, led |
 | `doorbell.py` | Input records, IRQ handlers, pulse judging | config, applog |
@@ -726,6 +726,13 @@ so `main` stays the single reader of `board.py`.
 `boot()` calls `persist.load()`, which also holds the fall-back-to-defaults guard, and
 everything else goes through `state_get` and `state_set`. Its one dependency is `applog`; the
 `os` and `json` imports moved with it, since nothing else in `main` touches the filesystem.
+
+`resets.py` is a leaf, not the `applog`/`persist` consumer first drawn: it depends only on
+`machine`. It owns the scratch layout and the diagnosis (capture, verdict, the `Reset:` line);
+callers never touch a scratch index, using `mark_intended_reset(code)` and
+`clear_unstable_count()` instead. Boot accounting (the boot number, and when a boot is stable
+enough to spend a flash write on) stays in `main`, because it is policy joining `persist` and
+`resets`. So does `self_reset()`, which must snapshot the ring queue before resetting.
 
 **Functions, not classes: decided.** MicroPython charges for every class and instance, and
 there is exactly one of each thing here: one input list, one queue, one log. Classes would

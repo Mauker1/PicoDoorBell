@@ -129,14 +129,14 @@ mem32[CHIP_RESET] = 0x00000100          # observed on a power-on boot
 set_reset_cause(3)                      # reset_cause said WDT_RESET, wrong
 m = load_and_boot()
 check('power-on verdict ignores a wrong cause',
-      m.reset_verdict(m.resetInfo), 'power')
+      m.resets.reset_verdict(m.resetInfo), 'power')
 
 mem32.cells.clear()
 mem32[CHIP_RESET] = 0x00010000          # observed after pressing reset
 set_reset_cause(1)                      # reset_cause said PWRON_RESET, wrong
 m = load_and_boot()
 check('RUN verdict ignores a wrong cause',
-      m.reset_verdict(m.resetInfo), 'run-pin')
+      m.resets.reset_verdict(m.resetInfo), 'run-pin')
 check('RUN reset reads as cold', m.resetInfo['warmBoot'], False)
 
 # Scratch intact means no hardware reset, so CHIP_RESET is stale.
@@ -145,10 +145,10 @@ mem32[UNSTABLE_ADDR] = 7
 mem32[CHIP_RESET] = 0x00000100          # left over from an earlier power-up
 m = load_and_boot()
 check('warm boot reports a warm reset',
-      m.reset_verdict(m.resetInfo), 'warm-reset')
+      m.resets.reset_verdict(m.resetInfo), 'warm-reset')
 check('warm boot does not misread stale POR as power',
-      m.reset_verdict(m.resetInfo) != 'power', True)
-line = m.format_reset_info(m.resetInfo)
+      m.resets.reset_verdict(m.resetInfo) != 'power', True)
+line = m.resets.format_reset_info(m.resetInfo)
 check('stale chip flags are labelled', 'chip(stale)=' in line, True)
 check('advisory cause is bracketed', '(cause=' in line, True)
 
@@ -156,7 +156,7 @@ mem32.cells.clear()
 mem32[CHIP_RESET] = 0                   # no flags, no scratch
 m = load_and_boot()
 check('no evidence reads as unknown',
-      m.reset_verdict(m.resetInfo), 'unknown')
+      m.resets.reset_verdict(m.resetInfo), 'unknown')
 
 # A genuine watchdog bite is distinguishable from a soft reboot. Observed on
 # the bench: wdt=0x1 (TIMER) for a real timeout during a slow request,
@@ -167,11 +167,11 @@ mem32[WDT_REASON] = 0x1
 mem32[CHIP_RESET] = 0
 m = load_and_boot()
 check('a TIMER bite reads as a watchdog reset',
-      m.reset_verdict(m.resetInfo), 'watchdog')
+      m.resets.reset_verdict(m.resetInfo), 'watchdog')
 
 mem32[WDT_REASON] = 0x2
 m = load_and_boot()
-check('a FORCE reset does not', m.reset_verdict(m.resetInfo), 'warm-reset')
+check('a FORCE reset does not', m.resets.reset_verdict(m.resetInfo), 'warm-reset')
 
 # --- 5. The discriminator the production unit needs ------------------------
 # Brownout and RUN-pin pickup must not look alike.
@@ -201,7 +201,7 @@ mem32.cells.clear()
 mem32[CHIP_RESET] = (1 << 8) | (1 << 16)
 set_reset_cause(1)
 m = load_and_boot()
-line = m.format_reset_info(m.resetInfo)
+line = m.resets.format_reset_info(m.resetInfo)
 # Both bits at once is not something hardware produces (confirmed on the
 # bench that flags do not accumulate) but the formatter should cope.
 check('summary names both flags', 'POR/BOD+RUN' in line, True)
@@ -238,7 +238,7 @@ mem32.cells.clear()
 mem32[CHIP_RESET] = 1 << 8
 m = load_and_boot()
 check('boot number survives a power cycle', m.bootNumber, 2)
-check('verdict still reads power', m.reset_verdict(m.resetInfo), 'power')
+check('verdict still reads power', m.resets.reset_verdict(m.resetInfo), 'power')
 stable_boot(m)
 check('total advanced to 2', _json.load(open('state.json'))['boots'], 2)
 
@@ -264,7 +264,7 @@ mem32[UNSTABLE_ADDR] = 4
 m = load_and_boot()
 check('unstable attempts counted', m.resetInfo['unstableBoots'], 5)
 check('summary flags the loop',
-      'unstable=5' in m.format_reset_info(m.resetInfo), True)
+      'unstable=5' in m.resets.format_reset_info(m.resetInfo), True)
 
 # Schema bump: a v1 file migrates and starts counting from zero.
 open('state.json', 'w').write('{"v": 1, "chatId": -5, "epochAnchor": null, "writes": 9}')

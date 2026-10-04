@@ -355,7 +355,7 @@ revision number does not.
 
 | Stage | Function | On failure |
 | --- | --- | --- |
-| 0. Diagnosis | `read_reset_info()` | Cannot fail; every read is guarded |
+| 0. Diagnosis | `resets.read_reset_info()` | Cannot fail; every read is guarded |
 | 1. Hardware | `setup_hardware()` | `error_halt()`: fast LED blink, forever |
 | 2. Flash | `persist.load()` | Log, fall back to defaults, continue |
 | 3. Network | `connect_wifi()` + `announce_startup()` | Log, continue; the main loop retries |
@@ -576,7 +576,8 @@ indistinguishable from the existing mystery unless the cause is recorded first.
 
 ### Failure behaviour
 
-`read_reset_info()` never raises. Every read is individually guarded and the
+`read_reset_info()` (in `resets.py`, a leaf that depends only on `machine`)
+never raises. Every read is individually guarded and the
 function returns a fully-populated dict regardless. Diagnostics must not be able
 to stop the device booting; a board that will not start is worse than one that
 cannot explain why it restarted.
@@ -1067,11 +1068,15 @@ the summary. One fact, carried across, at no cost in flash.
 ### Self-inflicted resets are marked
 
 `self_reset()` writes a marker to scratch 1 before resetting, so the next boot
-reports `verdict=self-reset` rather than `warm-reset`. Without it, the firmware's
+reports `verdict=self-reset` rather than `warm-reset`. Both writes go through
+`resets.mark_intended_reset(code)`, reason first and marker last, so an
+interrupted pair reads as unintended rather than carrying a wrong reason. Without it, the firmware's
 own reset would be indistinguishable from a watchdog bite: both are warm with no
 `CHIP_RESET` flags, and would pollute the reboot dataset.
 
-It also snapshots the queue first, so undelivered rings survive.
+It also snapshots the queue first, so undelivered rings survive. That is why
+`self_reset()` stays in `main` while the scratch layout lives in `resets.py`:
+the snapshot belongs to the ring queue, above it.
 
 > **Unverified:** scratch 0 and 1 are believed unused by the port. Only 4-7 are
 > documented as taken by the bootrom.
@@ -1276,7 +1281,7 @@ details are read.
 | File | Purpose |
 | --- | --- |
 | `main.py` | Firmware: boot, the main loop, and the wiring between modules |
-| `config.py`, `wdt.py`, `clockmod.py`, `led.py`, `applog.py`, `persist.py` | Firmware modules split out of `main.py` (E2). All must be on the device; a missing one is an ImportError at boot. |
+| `config.py`, `wdt.py`, `clockmod.py`, `led.py`, `applog.py`, `persist.py`, `resets.py` | Firmware modules split out of `main.py` (E2). All must be on the device; a missing one is an ImportError at boot. |
 | `board.py` | Pin assignments for this board. Copied from `boards/` at install time. |
 | `secrets.py` | Credentials and chat configuration. User-edited, never written by the firmware. |
 | `state.json` | Tier 2 runtime state. Firmware-written, never user-edited. |
