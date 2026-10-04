@@ -722,6 +722,11 @@ values `applog` once read from `main` are injected instead: `reset_log(header)` 
 line for a cleared log (the WiFi status), and `main` sets `applog.utcOffset` once at import,
 so `main` stays the single reader of `board.py`.
 
+`persist.py` owns the in-RAM mirror of `state.json` and is the only code that rebinds it:
+`boot()` calls `persist.load()`, which also holds the fall-back-to-defaults guard, and
+everything else goes through `state_get` and `state_set`. Its one dependency is `applog`; the
+`os` and `json` imports moved with it, since nothing else in `main` touches the filesystem.
+
 **Functions, not classes: decided.** MicroPython charges for every class and instance, and
 there is exactly one of each thing here: one input list, one queue, one log. Classes would
 buy testability this codebase already has by other means, at a cost in RAM on a part with

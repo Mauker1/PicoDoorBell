@@ -60,7 +60,7 @@ def reboot():
     reloaded first, since restore_queue reads from it.
     """
     m = stubs.load_firmware()
-    m.state = m.load_state()
+    m.persist.load()
     m.setup_hardware()
     m.restore_queue()
     m.send_message = recorder(m)

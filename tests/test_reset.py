@@ -272,9 +272,9 @@ mem32.cells.clear()
 mem32[CHIP_RESET] = 1 << 8
 m = load_and_boot()
 check('an older file migrates to the current version',
-      m.state['v'], m.STATE_VERSION)
-check('migration preserves chatId', m.state['chatId'], -5)
-check('absent boots field defaults to zero', m.state['boots'], 0)
+      m.persist.state['v'], m.persist.STATE_VERSION)
+check('migration preserves chatId', m.persist.state['chatId'], -5)
+check('absent boots field defaults to zero', m.persist.state['boots'], 0)
 
 # --- 8. Diagnostics must never stop the boot -------------------------------
 class ExplodingMem:

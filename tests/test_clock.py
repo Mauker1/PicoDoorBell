@@ -96,7 +96,7 @@ check('sync_clock reports success', m.sync_clock(), True)
 check('clock is live after sync', m.clockmod.clock_is_live(), True)
 check('clock_now returns the synced epoch', m.clockmod.clock_now(), WALL_MP)
 check('epoch persisted to flash for restored-ring aging',
-      m.state_get('epochAnchor', None), WALL_MP)
+      m.persist.state_get('epochAnchor', None), WALL_MP)
 
 # The anchor plus elapsed ticks: 42 s later the clock reads 42 s on.
 clock[0] = 5000 + 42000

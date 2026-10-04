@@ -249,9 +249,14 @@ that actually matters.
 ### API
 
 ```python
-state_get(key, fallback=None)   # read from the in-RAM mirror
-state_set(key, value)           # write only if the value actually changed
+persist.load()                          # boot only: read flash into the in-RAM mirror
+persist.state_get(key, fallback=None)   # read from the in-RAM mirror
+persist.state_set(key, value)           # write only if the value actually changed
 ```
+
+All of this lives in `persist.py` (E2). `load()` is the only place the mirror is
+rebound; nothing outside the module assigns it, and its one dependency is
+`applog`.
 
 `state_set` compares against the in-RAM mirror before writing. Because that
 mirror is loaded from flash and only mutated through `state_set`, the
@@ -352,7 +357,7 @@ revision number does not.
 | --- | --- | --- |
 | 0. Diagnosis | `read_reset_info()` | Cannot fail; every read is guarded |
 | 1. Hardware | `setup_hardware()` | `error_halt()`: fast LED blink, forever |
-| 2. Flash | `load_state()` | Log, fall back to defaults, continue |
+| 2. Flash | `persist.load()` | Log, fall back to defaults, continue |
 | 3. Network | `connect_wifi()` + `announce_startup()` | Log, continue; the main loop retries |
 
 ### Why the order matters
@@ -1271,7 +1276,7 @@ details are read.
 | File | Purpose |
 | --- | --- |
 | `main.py` | Firmware: boot, the main loop, and the wiring between modules |
-| `config.py`, `wdt.py`, `clockmod.py`, `led.py`, `applog.py` | Firmware modules split out of `main.py` (E2). All must be on the device; a missing one is an ImportError at boot. |
+| `config.py`, `wdt.py`, `clockmod.py`, `led.py`, `applog.py`, `persist.py` | Firmware modules split out of `main.py` (E2). All must be on the device; a missing one is an ImportError at boot. |
 | `board.py` | Pin assignments for this board. Copied from `boards/` at install time. |
 | `secrets.py` | Credentials and chat configuration. User-edited, never written by the firmware. |
 | `state.json` | Tier 2 runtime state. Firmware-written, never user-edited. |
