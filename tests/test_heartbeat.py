@@ -45,7 +45,7 @@ def fresh():
     # heartbeat's input_summary() needs it to report a Doorbell line.
     m.setup_hardware()
     m.send_message = lambda chat, msg: (sent.append(msg),
-                                        (m.REQUEST_OK, 200, {}))[1]
+                                        (m.net.REQUEST_OK, 200, {}))[1]
     return m
 
 
@@ -91,7 +91,7 @@ m = fresh()
 m.lastHeartbeat = 0
 clock[0] = m.config.HEARTBEAT_MS + 1000
 m.maybe_heartbeat()
-m.send_message = lambda chat, msg: (m.REQUEST_RETRY, 0, None)
+m.send_message = lambda chat, msg: (m.net.REQUEST_RETRY, 0, None)
 m.flush_announcement()
 check('a failed heartbeat is kept', m.pendingAnnouncement is not None, True)
 

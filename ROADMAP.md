@@ -690,7 +690,7 @@ them.
 | `applog.py` | `logLines`, `append_to_log`, `report`, `log_text`, `reset_log`, `log_prefix` | config, clockmod |
 | `persist.py` | `state.json`, the tier rules, atomic write | applog |
 | `resets.py` | Scratch registers, `read_reset_info`, verdicts | - |
-| `net.py` | WiFi connect/bounce, `do_request`, backoff | config, applog, wdt, led |
+| `net.py` | WiFi connect/bounce, `do_request`, backoff | config, applog, wdt, led, resets |
 | `telegram.py` | `send_message`, `read_message`, commands (including `print_log`), ring queue, `sync_clock` | net, applog, persist, clockmod, led |
 | `doorbell.py` | Input records, IRQ handlers, pulse judging | config, applog |
 | `main.py` | `boot()`, the loop, wiring | everything |
@@ -733,6 +733,21 @@ callers never touch a scratch index, using `mark_intended_reset(code)` and
 `clear_unstable_count()` instead. Boot accounting (the boot number, and when a boot is stable
 enough to spend a flash write on) stays in `main`, because it is policy joining `persist` and
 `resets`. So does `self_reset()`, which must snapshot the ring queue before resetting.
+
+`net.py` owns the radio (`wlan`, `power_up`), the link, `do_request` and its backoff, and
+wedged-stack detection. It needs two things that live above it, so `main` injects them at
+import as hooks, the same pattern as `applog.utcOffset`: `on_give_up(reason, code)` is
+`self_reset()`, and `on_wait()` is `maybe_snapshot_queue()`, run on every pass while
+`connect_wifi()` blocks. Both start as `None`, so an unwired hook fails loudly. This keeps the
+step a pure move. A later refinement could have `net` *request* a reset (a flag the main loop
+acts on, as the bounce already works) instead of calling a hook, but that changes timing and
+belongs in its own change with its own tests. Credentials are injected too, so `main` stays the
+single reader of `secrets.py`. `describe_api_error()` and `retry_after()` read Telegram's
+JSON, not HTTP, so they wait for `telegram.py`; `retry_after()` currently has no callers, so a
+429 gets the ordinary backoff. Decide its fate there.
+
+> **Noted for later:** `rp2.country('DE')` is hardcoded in `net.py`. An open project used
+> outside Germany needs it configurable, in `board.py` or `config.py`.
 
 **Functions, not classes: decided.** MicroPython charges for every class and instance, and
 there is exactly one of each thing here: one input list, one queue, one log. Classes would

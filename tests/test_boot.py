@@ -57,7 +57,7 @@ check('watchdog armed after the pin, before networking',
 check('timeout stays under the RP2040 ceiling',
       m.config.WDT_TIMEOUT_MS < 8300, True)
 check('LED was configured', m.led is not None, True)
-check('power save was disabled', WLAN.pm_set, m.WIFI_PM_NONE)
+check('power save was disabled', WLAN.pm_set, m.net.WIFI_PM_NONE)
 check('and set before connecting',
       events.index('wlan_active') < events.index('http_get'), True)
 pin_at = events.index('pin_16')
@@ -91,7 +91,7 @@ del events[:]
 Requests.raise_oserror = False
 m = load_and_boot()
 del events[:]
-m.connect_wifi()
+m.net.connect_wifi()
 check('connect_wifi sends nothing', 'http_post' in events, False)
 
 # --- 4. announce_startup picks the right message ---------------------------

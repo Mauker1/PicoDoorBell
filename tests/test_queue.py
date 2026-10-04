@@ -72,9 +72,9 @@ def recorder(m, outcome=None):
         if outcome is not None:
             return (outcome, 500, {})
         if not WLAN.connected or Requests.raise_oserror:
-            return (m.REQUEST_RETRY, 0, None)
+            return (m.net.REQUEST_RETRY, 0, None)
         sent.append(msg)
-        return (m.REQUEST_OK, 200, {})
+        return (m.net.REQUEST_OK, 200, {})
     return send
 
 
@@ -130,7 +130,7 @@ check('overflow counted', m.queueDropped, 5)
 m = fresh()
 m.enqueue_ring(2000)
 m.enqueue_ring(2000)
-m.send_message = recorder(m, outcome=m.REQUEST_FATAL)
+m.send_message = recorder(m, outcome=m.net.REQUEST_FATAL)
 m.flush_queue()
 check('undeliverable rings are dropped, not retried forever',
       len(m.queue), 0)
@@ -138,7 +138,7 @@ check('undeliverable rings are dropped, not retried forever',
 # A retryable failure keeps them.
 m = fresh()
 m.enqueue_ring(2000)
-m.send_message = recorder(m, outcome=m.REQUEST_RETRY)
+m.send_message = recorder(m, outcome=m.net.REQUEST_RETRY)
 m.flush_queue()
 check('a retryable failure keeps the ring', len(m.queue), 1)
 
@@ -174,14 +174,14 @@ check('the flash copy is cleared after delivery',
 # A watchdog bite during a slow DNS lookup would otherwise take it: the
 # five-minute snapshot has not fired yet and RAM does not survive.
 m = fresh()
-m.networkFailures = 3          # the network is already misbehaving
+m.net.networkFailures = 3          # the network is already misbehaving
 m.enqueue_ring(2000)
 stored = json.load(open('state.json'))['queue']
 check('a ring queued during trouble is written immediately', len(stored), 1)
 
 # When the network is healthy there is no such urgency, and no write.
 m = fresh()
-m.networkFailures = 0
+m.net.networkFailures = 0
 m.enqueue_ring(2000)
 exists = os.path.exists('state.json')
 stored = json.load(open('state.json'))['queue'] if exists else []
@@ -190,7 +190,7 @@ check('a ring queued on a healthy network writes nothing', stored, [])
 # --- 6c. An announcement is not lost to a failed send ----------------------
 m = fresh()
 m.pendingAnnouncement = 'boot report'
-m.send_message = recorder(m, outcome=m.REQUEST_RETRY)
+m.send_message = recorder(m, outcome=m.net.REQUEST_RETRY)
 m.flush_announcement()
 check('a failed announcement is retained',
       m.pendingAnnouncement, 'boot report')

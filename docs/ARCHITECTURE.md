@@ -920,6 +920,14 @@ landed: it was reserved from the start.
 One `connect()` is issued, then given 30 seconds to work before another is tried.
 After 20 attempts (roughly ten minutes) the board resets itself.
 
+All of this lives in `net.py` (E2): the radio, the link, `do_request` and its
+backoff, and wedged-stack detection. Two things it must trigger live above it,
+so `main` injects them as hooks at import: `net.on_give_up`, which is
+`self_reset()` (it snapshots the ring queue before resetting), and
+`net.on_wait`, which is `maybe_snapshot_queue()`, run on every pass while a
+connect blocks. Both start as `None`, so an unwired hook fails loudly instead
+of silently skipping a reset or a snapshot.
+
 ### WiFi power save is off
 
 The CYW43439 defaults to sleeping between beacons, which adds latency and drops
@@ -1084,7 +1092,8 @@ the snapshot belongs to the ring queue, above it.
 ### The queue is persisted during an outage
 
 `connect_wifi()` blocks the main loop for the whole outage, so
-`maybe_snapshot_queue()` is called from inside its wait. Otherwise the queue
+`maybe_snapshot_queue()` is called from inside its wait, through the
+`net.on_wait` hook. Otherwise the queue
 would never reach flash during the one situation it exists for.
 
 ---
@@ -1281,7 +1290,7 @@ details are read.
 | File | Purpose |
 | --- | --- |
 | `main.py` | Firmware: boot, the main loop, and the wiring between modules |
-| `config.py`, `wdt.py`, `clockmod.py`, `led.py`, `applog.py`, `persist.py`, `resets.py` | Firmware modules split out of `main.py` (E2). All must be on the device; a missing one is an ImportError at boot. |
+| `config.py`, `wdt.py`, `clockmod.py`, `led.py`, `applog.py`, `persist.py`, `resets.py`, `net.py` | Firmware modules split out of `main.py` (E2). All must be on the device; a missing one is an ImportError at boot. |
 | `board.py` | Pin assignments for this board. Copied from `boards/` at install time. |
 | `secrets.py` | Credentials and chat configuration. User-edited, never written by the firmware. |
 | `state.json` | Tier 2 runtime state. Firmware-written, never user-edited. |

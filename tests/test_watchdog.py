@@ -65,13 +65,13 @@ check('arming twice is a no-op', (m.wdt.arm_watchdog(), len(WDT.instances))[1], 
 # A handshake can run for seconds; the bite must not land mid-request.
 m = fresh()
 before = WDT.instances[0].feeds
-m.do_request('GET', 'https://example.invalid/x')
+m.net.do_request('GET', 'https://example.invalid/x')
 check('a request feeds the watchdog', WDT.instances[0].feeds > before, True)
 
 # Even a failing request must feed, or a flapping network kills the board.
 Requests.raise_oserror = True
 before = WDT.instances[0].feeds
-m.do_request('GET', 'https://example.invalid/x')
+m.net.do_request('GET', 'https://example.invalid/x')
 check('a failed request still feeds', WDT.instances[0].feeds > before, True)
 Requests.raise_oserror = False
 
@@ -97,19 +97,23 @@ check('a zero wait feeds once', WDT.instances[0].feeds - before, 1)
 # --- 4. No unfed sleep long enough to bite ---------------------------------
 # Static check: every time.sleep() left in the source must be short, since
 # only sleep_fed() feeds. blink_onboard_led and error_halt are the survivors.
-tree = ast.parse(open(SRC).read())
+# Scans every firmware module, not just main.py: the invariant is
+# firmware-wide, and the E2 split moves code out of main one module at a time.
 long_sleeps = []
-for node in ast.walk(tree):
-    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-            and node.func.attr == 'sleep'
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == 'time'):
-        arg = node.args[0] if node.args else None
-        if isinstance(arg, ast.Constant) and isinstance(arg.value, (int, float)):
-            if arg.value * 1000 >= 8000:
-                long_sleeps.append((node.lineno, arg.value))
-        elif not isinstance(arg, ast.Constant):
-            long_sleeps.append((node.lineno, 'non-constant'))
+for name in stubs.FIRMWARE_MODULES:
+    path = os.path.join(HERE, '..', name + '.py')
+    tree = ast.parse(open(path).read())
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == 'sleep'
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == 'time'):
+            arg = node.args[0] if node.args else None
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, (int, float)):
+                if arg.value * 1000 >= 8000:
+                    long_sleeps.append((name, node.lineno, arg.value))
+            elif not isinstance(arg, ast.Constant):
+                long_sleeps.append((name, node.lineno, 'non-constant'))
 check('no raw sleep can outlast the watchdog', long_sleeps, [])
 
 # --- 4b. A dropped network must not become a reset -------------------------
@@ -120,16 +124,16 @@ m = fresh()
 WLAN.connected = False
 try:
     del events[:]
-    outcome, status, body = m.do_request('GET', 'https://example.invalid/x')
+    outcome, status, body = m.net.do_request('GET', 'https://example.invalid/x')
     check('no socket is opened while WiFi is down', 'http_get' in events, False)
     check('it reports the request as skipped, not failed',
-          outcome, m.REQUEST_SKIPPED)
+          outcome, m.net.REQUEST_SKIPPED)
 finally:
     WLAN.connected = True
 
 # A timeout below the watchdog turns a stalled socket into an outcome.
 Requests.last_timeout = None
-m.do_request('GET', 'https://example.invalid/x')
+m.net.do_request('GET', 'https://example.invalid/x')
 check('requests carry a timeout', Requests.last_timeout, m.config.REQUEST_TIMEOUT_S)
 check('the timeout fires before the watchdog',
       m.config.REQUEST_TIMEOUT_S * 1000 < m.config.WDT_TIMEOUT_MS, True)
@@ -139,10 +143,10 @@ Requests.accepts_timeout = False
 try:
     m = fresh()
     del events[:]
-    outcome, status, body = m.do_request('GET', 'https://example.invalid/x')
-    check('falls back when timeout is unsupported', outcome, m.REQUEST_OK)
+    outcome, status, body = m.net.do_request('GET', 'https://example.invalid/x')
+    check('falls back when timeout is unsupported', outcome, m.net.REQUEST_OK)
     check('the request still happened', 'http_get' in events, True)
-    check('and it stops trying', m.requestsTimeoutSupported, False)
+    check('and it stops trying', m.net.requestsTimeoutSupported, False)
 finally:
     Requests.accepts_timeout = True
 
@@ -167,12 +171,23 @@ def ticking_sleep(seconds):
     real_sleep_fed(seconds)
 
 
+# net cannot import the layers above it; main wires the hooks at import.
+check('net hooks are wired at import',
+      (m.net.on_give_up is m.self_reset, m.net.on_wait is m.maybe_snapshot_queue),
+      (True, True))
+
 m.wdt.sleep_fed = ticking_sleep
-m.connect_wifi()
+# Count the wait hook while the connect blocks: it is how queued rings reach
+# flash during a long outage (B6), and nothing else runs while it blocks.
+waits = []
+m.net.on_wait = lambda: waits.append(1)
+m.net.connect_wifi()
+m.net.on_wait = m.maybe_snapshot_queue
 issued = events.count('wlan_connect')
 check('one connect per attempt, not per poll', issued, 3)
 check('it did connect in the end', WLAN.connected, True)
 check('no reset was needed', 'machine_reset' in events, False)
+check('a blocked connect keeps running the wait hook', len(waits) >= issued, True)
 
 # Give up and reset rather than flail forever. Boot with WiFi up, since
 # boot() itself calls connect_wifi() and would otherwise loop here.
@@ -183,7 +198,7 @@ WLAN.connected = False
 WLAN.connect_after = None
 del events[:]
 try:
-    m2.connect_wifi()
+    m2.net.connect_wifi()
 except stubs.ResetCalled:
     pass
 check('a hopeless outage ends in a reset', 'machine_reset' in events, True)
@@ -204,29 +219,29 @@ m.wdt.sleep_fed = lambda s: None
 Requests.raise_oserror = True
 del events[:]
 
-m.lastNetworkSuccess = -m.config.NETWORK_DEAD_MS - 1000
+m.net.lastNetworkSuccess = -m.config.NETWORK_DEAD_MS - 1000
 for _ in range(3):
     # Backoff would otherwise skip most of these without attempting.
-    m.networkBackoffMs = 0
-    m.do_request('GET', 'https://example.invalid/x')
+    m.net.networkBackoffMs = 0
+    m.net.do_request('GET', 'https://example.invalid/x')
 check('the first remedy is a bounce, not a reset',
-      m.networkBounceRequested, True)
+      m.net.networkBounceRequested, True)
 check('nothing was reset yet', 'machine_reset' in events, False)
 
 # The bounce keeps the log, the queue and the uptime.
 lines_before = len(m.applog.logLines)
 m.wdt.sleep_fed = lambda s: None
-m.bounce_wifi()
-check('the bounce clears the request', m.networkBounceRequested, False)
-check('and records that it was tried', m.networkBounced, True)
+m.net.bounce_wifi()
+check('the bounce clears the request', m.net.networkBounceRequested, False)
+check('and records that it was tried', m.net.networkBounced, True)
 check('the log survives a bounce', len(m.applog.logLines) >= lines_before, True)
 
 # Still failing after a bounce: now a reset is the only local action left.
 try:
-    m.lastNetworkSuccess = -m.config.NETWORK_DEAD_MS - 1000
+    m.net.lastNetworkSuccess = -m.config.NETWORK_DEAD_MS - 1000
     for _ in range(3):
-        m.networkBackoffMs = 0
-        m.do_request('GET', 'https://example.invalid/x')
+        m.net.networkBackoffMs = 0
+        m.net.do_request('GET', 'https://example.invalid/x')
     check('failures after a bounce end in a reset',
           'machine_reset' in events, True)
 except stubs.ResetCalled:
@@ -235,10 +250,10 @@ Requests.raise_oserror = False
 
 # Recovery clears the escalation, so the next outage starts from a bounce.
 m = fresh()
-m.note_request_result(m.REQUEST_RETRY)
-m.networkBounced = True
-m.note_request_result(m.REQUEST_OK)
-check('recovery resets the escalation', m.networkBounced, False)
+m.net.note_request_result(m.net.REQUEST_RETRY)
+m.net.networkBounced = True
+m.net.note_request_result(m.net.REQUEST_OK)
+check('recovery resets the escalation', m.net.networkBounced, False)
 
 # The trigger is elapsed time, not a failure count. Backoff stretches a count
 # into an unpredictable duration: fifteen failures worked out at about twelve
@@ -246,16 +261,16 @@ check('recovery resets the escalation', m.networkBounced, False)
 # was unreachable.
 m = fresh()
 Requests.raise_oserror = True
-m.lastNetworkSuccess = 0
+m.net.lastNetworkSuccess = 0
 clock[0] = m.config.NETWORK_DEAD_MS // 2
-m.networkBackoffMs = 0
-m.do_request('GET', 'https://example.invalid/x')
+m.net.networkBackoffMs = 0
+m.net.do_request('GET', 'https://example.invalid/x')
 check('a short dead spell asks for nothing',
-      m.networkBounceRequested, False)
+      m.net.networkBounceRequested, False)
 clock[0] = m.config.NETWORK_DEAD_MS + 1000
-m.networkBackoffMs = 0
-m.do_request('GET', 'https://example.invalid/x')
-check('a long one asks for a bounce', m.networkBounceRequested, True)
+m.net.networkBackoffMs = 0
+m.net.do_request('GET', 'https://example.invalid/x')
+check('a long one asks for a bounce', m.net.networkBounceRequested, True)
 Requests.raise_oserror = False
 
 # A reset reason survives the reset it describes, since the log does not.
@@ -277,41 +292,41 @@ check('and it reaches the summary',
 # Failures back off instead of retrying every pass.
 m = fresh()
 Requests.raise_oserror = True
-m.note_request_result(m.REQUEST_RETRY)
-first = m.networkBackoffMs
-m.note_request_result(m.REQUEST_RETRY)
-second = m.networkBackoffMs
+m.net.note_request_result(m.net.REQUEST_RETRY)
+first = m.net.networkBackoffMs
+m.net.note_request_result(m.net.REQUEST_RETRY)
+second = m.net.networkBackoffMs
 check('backoff grows', second > first, True)
 check('backoff is capped',
       m.config.NETWORK_BACKOFF_MAX_MS >= second, True)
 
 del events[:]
-outcome, status, body = m.do_request('GET', 'https://example.invalid/x')
+outcome, status, body = m.net.do_request('GET', 'https://example.invalid/x')
 check('a backed-off request is skipped, not attempted',
       'http_get' in events, False)
 # A skip is not evidence of anything: it must not count toward the
 # dead-network deadline, and must not be logged as a failure.
-m.lastNetworkSuccess = -m.config.NETWORK_DEAD_MS - 1000
-m.networkBounceRequested = False
-outcome, status, body = m.do_request('GET', 'https://example.invalid/x')
-check('a skipped request reports as skipped', outcome, m.REQUEST_SKIPPED)
+m.net.lastNetworkSuccess = -m.config.NETWORK_DEAD_MS - 1000
+m.net.networkBounceRequested = False
+outcome, status, body = m.net.do_request('GET', 'https://example.invalid/x')
+check('a skipped request reports as skipped', outcome, m.net.REQUEST_SKIPPED)
 check('and does not trigger the escalation',
-      m.networkBounceRequested, False)
+      m.net.networkBounceRequested, False)
 Requests.raise_oserror = False
 
 # A Telegram error is not a transport failure and must not count.
 m = fresh()
-before = m.networkFailures
-m.note_request_result(m.REQUEST_FATAL)
+before = m.net.networkFailures
+m.net.note_request_result(m.net.REQUEST_FATAL)
 check('a 4xx does not count as a dead stack',
-      m.networkFailures, before)
+      m.net.networkFailures, before)
 
 # Success clears the counter.
 m = fresh()
-m.note_request_result(m.REQUEST_RETRY)
-m.note_request_result(m.REQUEST_OK)
-check('success resets the failure count', m.networkFailures, 0)
-check('and clears the backoff', m.networkBackoffMs, 0)
+m.net.note_request_result(m.net.REQUEST_RETRY)
+m.net.note_request_result(m.net.REQUEST_OK)
+check('success resets the failure count', m.net.networkFailures, 0)
+check('and clears the backoff', m.net.networkBackoffMs, 0)
 
 # --- 4e. A join in progress must not be interrupted ------------------------
 # Observed on the bench: seven attempts over three and a half minutes on a
@@ -330,22 +345,22 @@ clock[0] = 0
 # longer allowance, not the stalled-attempt interval.
 WLAN.connect_after = 200      # never succeeds within the window under test
 check('progress states are recognised',
-      2 in m.WIFI_PROGRESS_STATES, True)
+      2 in m.net.WIFI_PROGRESS_STATES, True)
 check('a stalled attempt retries sooner than a progressing one',
       m.config.WIFI_REISSUE_MS < m.config.WIFI_PROGRESS_MAX_MS, True)
 check('but not so soon that it hammers the driver',
       m.config.WIFI_REISSUE_MS >= 5000, True)
 check('status 2 is named, not printed raw',
-      m.wifi_status_name(2), 'awaiting IP')
+      m.net.wifi_status_name(2), 'awaiting IP')
 check('-3 is not called a wrong password',
-      m.wifi_status_name(-3), 'auth rejected')
+      m.net.wifi_status_name(-3), 'auth rejected')
 
 # A terminal status does retry at the shorter interval.
 WLAN.status_code = -2         # no AP found
 WLAN.connect_after = 3
 del events[:]
 clock[0] = 0
-m.connect_wifi()
+m.net.connect_wifi()
 check('a terminal status still retries', events.count('wlan_connect'), 3)
 WLAN.status_code = 0
 WLAN.connected = True

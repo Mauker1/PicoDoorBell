@@ -1,7 +1,8 @@
-"""Host-side fakes for the hardware modules main.py imports (F1).
+"""Host-side fakes for the hardware modules the firmware imports (F1).
 
-main.py imports machine, network, rp2, urequests, ubinascii, time, gc, board
-and secrets, none of which exist under CPython. This module provides stand-ins
+The firmware (main.py and, since the E2 split, net.py and the other modules)
+imports machine, network, rp2, urequests, ubinascii, time, gc, board and
+secrets, none of which exist under CPython. This module provides stand-ins
 faithful enough that the firmware's logic runs on a host, so the suites can
 `import main` (see the __name__ guard at the foot of main.py) instead of
 AST-stripping the loop and exec-ing the source.
@@ -317,4 +318,4 @@ def load_firmware():
 # First-party firmware modules that main imports. Dropped before each load so
 # their module-level state starts fresh. Extend as the E2 split adds modules.
 FIRMWARE_MODULES = ('main', 'config', 'wdt', 'clockmod', 'led', 'applog',
-                    'persist', 'resets')
+                    'persist', 'resets', 'net')

@@ -142,7 +142,7 @@ def ticking_sleep(seconds):
 
 m.wdt.sleep_fed = ticking_sleep
 m.led.led.levels.clear()
-m.connect_wifi()
+m.net.connect_wifi()
 check('the LED toggled while connecting', len(m.led.led.levels) > 1, True)
 check('and ends solid on once connected', m.led.led.value(), 1)
 check('and the state is connected', m.led.ledState, m.led.LED_CONNECTED)
@@ -150,7 +150,7 @@ check('and the state is connected', m.led.ledState, m.led.LED_CONNECTED)
 # --- 8. A delivered ring blinks the alert ----------------------------------
 m = fresh()
 sent = []
-m.send_message = lambda chat, msg: (sent.append(msg), (m.REQUEST_OK, 200, {}))[1]
+m.send_message = lambda chat, msg: (sent.append(msg), (m.net.REQUEST_OK, 200, {}))[1]
 m.led.set_led_state(m.led.LED_CONNECTED)
 m.enqueue_ring(2000)
 m.led.led.levels.clear()

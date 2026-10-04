@@ -59,9 +59,9 @@ def fresh():
 def make_sender(m, fail=False):
     def send(chat, msg):
         if fail:
-            return (m.REQUEST_RETRY, 0, None)
+            return (m.net.REQUEST_RETRY, 0, None)
         sent.append(msg)
-        return (m.REQUEST_OK, 200, {})
+        return (m.net.REQUEST_OK, 200, {})
     return send
 
 

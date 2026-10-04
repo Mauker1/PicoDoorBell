@@ -22,11 +22,8 @@
 # SOFTWARE.
 ####################################################################################
 
-import rp2
-import network
 import ubinascii
 import machine
-import urequests as requests
 import time
 import gc
 # C1: NTP wall clock. ntptime ships with the rp2 port but not with host-side
@@ -43,6 +40,7 @@ import led
 import applog
 import persist
 import resets
+import net
 from secrets import secrets
 
 ####################################################################################
@@ -97,15 +95,6 @@ wifiPowerSave = getattr(board, 'wifiPowerSave', False)
 utcOffset = getattr(board, 'utcOffset', 0)
 applog.utcOffset = utcOffset
 
-# Newer builds name this; older ones only take the magic number.
-WIFI_PM_NONE = getattr(network.WLAN, 'PM_NONE', 0xa11140)
-WIFI_PM_PERFORMANCE = getattr(network.WLAN, 'PM_PERFORMANCE', 0xa11142)
-
-# Set country to avoid possible errors
-rp2.country('DE')
-
-wlan = network.WLAN(network.STA_IF)
-
 # Configured by setup_hardware() during boot, not at import time, so that
 # failures are catchable and the ordering is explicit. The LED pin lives in
 # the led module (led.init), not here.
@@ -113,17 +102,13 @@ doorBellInput = None
 mac = ''
 
 # Load login data from different file for safety reasons
-ssid = secrets['ssid']
-pw = secrets['pw']
+# WiFi credentials are handed to net in the wiring block before boot().
 botToken = secrets['botToken']
 chatId = secrets['telegramDmUid']
 
 # Messages and commands now live in config.py.
 
 # The in-memory log lives in applog.py.
-
-# Wifi connection status
-wifiData = ''
 
 # Telegram update id for offset
 updateId = 0
@@ -204,35 +189,6 @@ lastNtpSync = 0
 ####################################################################################
 
 ####################################################################################
-# B4 reconnection.
-#
-# The previous loop called wlan.connect() every three seconds for as long as the
-# network was down. A ten-minute outage on the bench issued roughly 200 of them,
-# and afterwards the board associated -- status 3, IP printed -- but passed no
-# traffic at all. Re-issuing a connect while one is already in progress is a
-# known way to wedge the cyw43 stack, and a wedged stack is precisely what a
-# reset fixes.
-####################################################################################
-
-
-# Statuses meaning "a join is under way, leave it alone". MicroPython exposes
-# no STAT_ constant for 2, which is associated-but-awaiting-DHCP.
-WIFI_PROGRESS_STATES = (1, 2)
-
-# The port's own names are thin and, for -3, misleading: cyw43 reports it for
-# any association rejection, including MAC filtering or an AP block, not only
-# a wrong password.
-WIFI_STATUS_NAMES = {
-    0: 'idle',
-    1: 'joining',
-    2: 'awaiting IP',
-    3: 'connected',
-    -1: 'link failed',
-    -2: 'no AP found',
-    -3: 'auth rejected',
-}
-
-####################################################################################
 # B1 input timings now live in config.py.
 ####################################################################################
 
@@ -293,92 +249,10 @@ sendURL = 'https://api.telegram.org/bot' + botToken + '/sendMessage'
 # Telegram getUpdates URL
 getURL = 'https://api.telegram.org/bot' + botToken + '/getUpdates'
     
-# Request outcomes
-# Applies per socket operation, not per request: DNS, connect, the TLS
-# handshake and the read each get their own budget. A request can therefore
-# outlast the 8 s watchdog even with a timeout set, which is exactly what
-# happened on the bench -- a reset landing immediately after
-# 'HTTP GET failed: ETIMEDOUT'.
-#
-# Five seconds is a deliberate choice, not a default. Three was tried after a
-# run of ETIMEDOUT failures, but those were most likely the inter-VLAN hop and
-# WiFi power save rather than anything the timeout could fix -- both since
-# removed. Tuning against a problem that is being eliminated only leaves a
-# margin tighter than the hardware needs, and turns healthy-but-slow requests
-# into retries.
-#
-# The exposure is reduced, not removed: getaddrinfo can block outside the
-# timeout entirely, and the RP2040 caps the watchdog near 8.3 s, so there is no
-# headroom to buy on the other side. The answer to that is to make a reset
-# cheap, which the flash boot counter, the scratch reset reason and the
-# immediate queue snapshot already do.
-# config.REQUEST_TIMEOUT_S now lives in config.py.
 
-# Flipped off the first time urequests rejects the timeout argument.
-requestsTimeoutSupported = True
-
-####################################################################################
-# Wedged-stack detection.
-#
-# Reproduced on the bench: after the AP rejected the board for a few minutes,
-# it re-associated -- wlan.status() reported connected and ifconfig printed an
-# IP -- but every DNS lookup returned -2, indefinitely. B4's attempt counter
-# does not help, because it only guards the connection phase; once status
-# reads 3 the reset path is out of reach.
-#
-# A stack that claims to be up and passes nothing is worse than one that admits
-# it is down, because nothing notices.
-#
-# The remedy escalates rather than jumping to a reset, because the firmware
-# cannot tell a wedged local stack from an upstream block. A router that filters
-# a device while leaving association and DHCP intact produces exactly the same
-# symptom -- and did, during testing, which is why the original diagnosis here
-# is uncertain. Resetting cannot fix an upstream block, so the cheap local
-# remedy comes first:
-#
-#   1. bounce the WiFi link (disconnect, reconnect)
-#   2. if failures continue after that, reset
-#
-# The bounce also preserves the RAM log, which a reset destroys.
-####################################################################################
-
-# Elapsed time without a success, not a failure count. Backoff stretches a
-# count into an unpredictable duration -- fifteen failures works out at about
-# twelve minutes, by which point the AP had already deauthenticated the board
-# on the bench and this path was unreachable.
-#
-# Five minutes, not two. An associated-but-dead link recovered on its own
-# after roughly seven minutes on the bench, with no intervention: the cause
-# was upstream, not local. Bouncing at two minutes would have discarded a
-# working association several minutes before the network returned -- and
-# reassociating on that router took 28 attempts. Nothing is lost by waiting,
-# because the queue holds the ring; acting early can make recovery slower.
-# Network dead/backoff timings now live in config.py.
-
-networkFailures = 0
-networkBackoffMs = 0
-networkRetryAt = 0
-networkBounceRequested = False
-networkBounced = False
-lastNetworkSuccess = 0
-
-REQUEST_OK = 0          # 2xx, body decoded
-REQUEST_RETRY = 1       # transient (network fault or 5xx), safe to retry
-REQUEST_RATE_LIMIT = 2  # 429, honour retry_after before retrying
-REQUEST_FATAL = 3       # other 4xx, retrying will not help
-REQUEST_SKIPPED = 4     # never attempted: backoff, or the link is down
-
-def classify_response(status):
-    if status <= 0:
-        # No HTTP response at all -- transient by definition.
-        return REQUEST_RETRY
-    if status >= 200 and status < 300:
-        return REQUEST_OK
-    if status == 429:
-        return REQUEST_RATE_LIMIT
-    if status >= 500:
-        return REQUEST_RETRY
-    return REQUEST_FATAL
+# The network layer (WiFi, do_request, backoff, wedged-stack detection) lives
+# in net.py. These two read Telegram's JSON, not HTTP, so they stay with the
+# Telegram code.
 
 def describe_api_error(status, body):
     # Telegram reports failures as
@@ -400,145 +274,6 @@ def retry_after(body):
     except (KeyError, TypeError, ValueError):
         return 0
 
-def note_request_result(outcome):
-    """Track whether the network is actually carrying traffic.
-
-    A run of failures while `wlan.status()` still reports a connection means
-    the stack is associated but dead. Nothing else detects that state, and
-    only a reset clears it.
-    """
-    global networkFailures, networkBackoffMs, networkRetryAt
-    global networkBounceRequested, networkBounced, lastNetworkSuccess
-    now = time.ticks_ms()
-    if outcome == REQUEST_OK:
-        if networkFailures:
-            applog.report('Network recovered after ' + str(networkFailures) +
-                   ' failure(s)')
-        networkFailures = 0
-        networkBackoffMs = 0
-        networkBounced = False
-        lastNetworkSuccess = now
-        return
-    if outcome in (REQUEST_FATAL, REQUEST_SKIPPED):
-        # FATAL: Telegram answered, so the link is fine. SKIPPED: nothing was
-        # attempted, so it is evidence of nothing.
-        return
-    networkFailures += 1
-    if networkBackoffMs:
-        networkBackoffMs = min(networkBackoffMs * 2, config.NETWORK_BACKOFF_MAX_MS)
-    else:
-        networkBackoffMs = config.NETWORK_BACKOFF_MS
-    networkRetryAt = time.ticks_add(now, networkBackoffMs)
-    if (time.ticks_diff(now, lastNetworkSuccess) > config.NETWORK_DEAD_MS and
-            is_wifi_connected()):
-        if networkBounced:
-            # The link was already bounced and it did not help, so the fault
-            # is not the association. Either the stack is wedged below it, or
-            # the problem is upstream and a reset will not fix that either --
-            # but a reset is the only local action left.
-            self_reset('network dead for ' +
-                       str(time.ticks_diff(now, lastNetworkSuccess) // 1000) +
-                       's after a WiFi bounce', resets.REASON_NETWORK)
-        else:
-            # Requested rather than done here: this runs deep inside a
-            # request, and reconnecting from there would be re-entrant.
-            networkBounceRequested = True
-
-def bounce_wifi():
-    """Drop and re-establish the link, without resetting the board.
-
-    The gentler half of the escalation. Clears an association that is up
-    but carrying nothing, and unlike a reset it keeps the log, the queued
-    rings in RAM, and the uptime.
-    """
-    global networkBounceRequested, networkBounced
-    global networkFailures, networkBackoffMs
-    networkBounceRequested = False
-    networkBounced = True
-    networkFailures = 0
-    networkBackoffMs = 0
-    applog.report('Network unresponsive while associated; bouncing the link')
-    try:
-        wlan.disconnect()
-    except Exception as e:
-        applog.report('WiFi disconnect failed: ' + str(e))
-    wdt.sleep_fed(2)
-    connect_wifi()
-
-def do_request(method, url, payload=None):
-    """Perform an HTTP request and always release the socket.
-
-    Returns (outcome, status, body), where body is the decoded JSON
-    response or None. Never raises for network or HTTP-level failures --
-    callers branch on outcome instead.
-    """
-    global requestsTimeoutSupported
-    # Do not open a socket the network cannot carry. Losing WiFi mid-request
-    # is what hangs urequests, and the check is free.
-    if not is_wifi_connected():
-        return (REQUEST_SKIPPED, 0, None)
-
-    # Back off after failures rather than retrying every pass. Without this a
-    # long outage burns hundreds of DNS lookups an hour and floods the log.
-    if networkBackoffMs and time.ticks_diff(time.ticks_ms(), networkRetryAt) < 0:
-        # Not a failure: nothing was attempted. Logging it as one produced
-        # entries like 'getUpdates failed: status=0' for requests that never
-        # happened, and counted against the dead-network deadline twice.
-        return (REQUEST_SKIPPED, 0, None)
-
-    response = None
-    # A handshake can run into seconds; the watchdog must not bite mid-request.
-    wdt.feed_watchdog()
-    try:
-        if requestsTimeoutSupported:
-            try:
-                if method == 'POST':
-                    response = requests.post(url, json=payload,
-                                             timeout=config.REQUEST_TIMEOUT_S)
-                else:
-                    response = requests.get(url, timeout=config.REQUEST_TIMEOUT_S)
-            except TypeError:
-                # This urequests build has no timeout parameter. Note it once
-                # and fall through to the untimed call below.
-                requestsTimeoutSupported = False
-                applog.append_to_log('urequests has no timeout support; '
-                              'the watchdog is the only backstop')
-        if response is None and not requestsTimeoutSupported:
-            if method == 'POST':
-                response = requests.post(url, json=payload)
-            else:
-                response = requests.get(url)
-        status = response.status_code
-        # Decode while the socket is still open. Telegram answers JSON
-        # for errors too, so this is also how we read error details.
-        try:
-            body = response.json()
-        except (ValueError, OSError):
-            body = None
-        outcome = classify_response(status)
-        note_request_result(outcome)
-        return (outcome, status, body)
-    except OSError as e:
-        # DNS failure, refused connection, TLS failure, timeout. Printed,
-        # not just logged: when the network misbehaves this errno is the
-        # first thing anyone needs, and a full log used to swallow it.
-        note_request_result(REQUEST_RETRY)
-        # The backoff is stated because it is otherwise invisible: requests
-        # skipped while it runs print nothing at all, so a quiet log looks
-        # the same whether nothing was tried or nothing failed.
-        applog.report('HTTP ' + method + ' failed: ' + str(e) +
-               ' (next attempt in ' + str(networkBackoffMs // 1000) + 's)')
-        return (REQUEST_RETRY, 0, None)
-    finally:
-        if response is not None:
-            try:
-                response.close()
-            except Exception:
-                # Closing must never mask the real outcome.
-                pass
-        # urequests leaks sockets quickly without this on a 264 KB part.
-        gc.collect()
-        wdt.feed_watchdog()
 
 # The watchdog primitive (arm_watchdog, feed_watchdog, sleep_fed) now lives
 # in wdt.py.
@@ -546,8 +281,8 @@ def do_request(method, url, payload=None):
 # Send a telegram message to a given user id
 def send_message (chatId, message):
     param = {'chat_id': chatId, 'text': message}
-    outcome, status, body = do_request('POST', sendURL, param)
-    if outcome not in (REQUEST_OK, REQUEST_SKIPPED) and status != 0:
+    outcome, status, body = net.do_request('POST', sendURL, param)
+    if outcome not in (net.REQUEST_OK, net.REQUEST_SKIPPED) and status != 0:
         # status 0 means do_request already reported the transport error.
         applog.report('sendMessage failed: ' + describe_api_error(status, body))
     return (outcome, status, body)
@@ -563,8 +298,8 @@ def discard_update_backlog():
     everything before it.
     """
     global updateId
-    outcome, status, body = do_request('GET', getURL + '?offset=-1&limit=1')
-    if outcome != REQUEST_OK:
+    outcome, status, body = net.do_request('GET', getURL + '?offset=-1&limit=1')
+    if outcome != net.REQUEST_OK:
         return False
     try:
         results = body['result']
@@ -583,10 +318,10 @@ def read_message(chatId):
     else:
         url = getURL + "?chat_id=" + str(chatId)
     # NOTE: never print or log `url` -- it embeds the bot token.
-    outcome, status, body = do_request('GET', url)
-    if outcome == REQUEST_SKIPPED:
+    outcome, status, body = net.do_request('GET', url)
+    if outcome == net.REQUEST_SKIPPED:
         return
-    if outcome != REQUEST_OK:
+    if outcome != net.REQUEST_OK:
         # status 0 means do_request already reported the transport error
         # with its errno; repeating it as 'status=0' adds nothing.
         if status != 0:
@@ -624,7 +359,7 @@ def print_log(chatId):
             if edge > 0:
                 chunk = chunk[:edge]
         outcome, status, body = send_message(chatId, chunk)
-        if outcome != REQUEST_OK:
+        if outcome != net.REQUEST_OK:
             # Keep everything. A log that failed to send is exactly the log
             # someone needs.
             applog.report('Log send failed; keeping it')
@@ -632,7 +367,7 @@ def print_log(chatId):
         pending = pending[len(chunk):]
         if pending[:1] == '\n':
             pending = pending[1:]
-    applog.reset_log(wifiData)
+    applog.reset_log(net.wifiData)
     return True
 
 # Tier 2 persistence (state.json) lives in persist.py.
@@ -656,16 +391,6 @@ resetInfo = None
 # G1 LED state machine now lives in led.py.
 ####################################################################################
 
-def is_wifi_connected():
-    wlan_status = wlan.status()
-    if wlan_status != 3:
-        return False
-    else:
-        return True
-
-def wifi_status_name(code):
-    return WIFI_STATUS_NAMES.get(code, 'status ' + str(code))
-
 def self_reset(reason, code=0):
     """Reset deliberately, leaving a marker so the next boot knows.
 
@@ -683,72 +408,6 @@ def self_reset(reason, code=0):
     resets.mark_intended_reset(code)
     time.sleep(1)                 # let the console drain
     machine.reset()
-
-def connect_wifi():
-    """Bring the WiFi link up. Connection only -- no notifications.
-
-    Callers decide whether to announce; mixing the two made a transport
-    failure look like a connection failure.
-
-    One connect() is issued and then given config.WIFI_REISSUE_MS to work before
-    another is tried. The previous code re-issued every three seconds,
-    which left the stack associated but unable to pass traffic after a long
-    outage. After config.WIFI_MAX_ATTEMPTS the board resets, because at that point
-    a wedged driver is the likeliest remaining explanation and a reset is
-    the only thing that clears it.
-    """
-    global wifiData, lastNetworkSuccess
-    attempts = 0
-    issuedAt = None
-    while True:
-        if (is_wifi_connected()):
-            led.blink_led(3)
-            led.set_led_state(led.LED_CONNECTED)
-            status = wlan.ifconfig()
-            print('ip = ' + status[0])
-            wifiData = 'WiFi connected. IP: ' + status[0]
-            applog.append_to_log(wifiData)
-            # A fresh link deserves a fresh grace period; otherwise the first
-            # failure after a long outage looks like a dead network.
-            lastNetworkSuccess = time.ticks_ms()
-            return True
-
-        now = time.ticks_ms()
-        status = wlan.status()
-        if issuedAt is None:
-            reissue = True
-        elif status in WIFI_PROGRESS_STATES:
-            # A join is under way. Calling connect() again aborts it and
-            # starts over -- observed as seven attempts over three and a
-            # half minutes on a network that was perfectly available.
-            reissue = time.ticks_diff(now, issuedAt) > config.WIFI_PROGRESS_MAX_MS
-        else:
-            reissue = time.ticks_diff(now, issuedAt) > config.WIFI_REISSUE_MS
-
-        if reissue:
-            attempts += 1
-            if attempts > config.WIFI_MAX_ATTEMPTS:
-                self_reset('WiFi unreachable after ' + str(attempts - 1) +
-                           ' attempts', resets.REASON_WIFI)
-            led.set_led_state(led.LED_CONNECTING)
-            applog.report('WiFi down (' + wifi_status_name(status) +
-                   '), attempt ' + str(attempts))
-            try:
-                wlan.connect(ssid, pw)
-            except OSError as e:
-                applog.report('WiFi connect failed: ' + str(e))
-            issuedAt = now
-
-        wdt.sleep_fed(config.WIFI_POLL_MS / 1000.0)
-        # Connecting blink: one toggle per poll pass gives a ~1 Hz flash
-        # while the join is under way, without a timer. Only while the state
-        # is connecting, so a caller that set some other state is respected.
-        if led.ledState == led.LED_CONNECTING:
-            led.led_toggle()
-        # The loop is blocked here for as long as the outage lasts, so the
-        # queue would otherwise never reach flash during the one situation
-        # it exists for.
-        maybe_snapshot_queue()
 
 def announce_startup():
     """Tell the chat we are up. Best effort -- never fatal.
@@ -783,10 +442,10 @@ def flush_announcement():
     if pendingAnnouncement is None:
         return True
     outcome, status, body = send_message(chatId, pendingAnnouncement)
-    if outcome == REQUEST_OK:
+    if outcome == net.REQUEST_OK:
         pendingAnnouncement = None
         return True
-    if outcome == REQUEST_FATAL:
+    if outcome == net.REQUEST_FATAL:
         applog.report('Announcement undeliverable; dropping it')
         pendingAnnouncement = None
     return False
@@ -916,7 +575,7 @@ def sync_clock():
     global lastNtpSync
     if ntptime is None:
         return False
-    if not is_wifi_connected():
+    if not net.is_wifi_connected():
         return False
     # Bracket the blocking UDP call with feeds; set the module timeout low so
     # a dead NTP server cannot approach the watchdog ceiling.
@@ -996,7 +655,7 @@ def enqueue_ring(width):
         queueDropped += 1
         applog.append_to_log('Queue full, dropped the oldest ring')
     queue.append([time.ticks_ms(), width, current_epoch(), False])
-    if networkFailures:
+    if net.networkFailures:
         # The network is already failing, so this ring may sit here a while
         # -- and a watchdog bite during a slow DNS lookup would take it with
         # it. One write, only for rings that arrive during trouble.
@@ -1036,10 +695,10 @@ def flush_queue():
     while queue and sentCount < config.QUEUE_FLUSH_PER_PASS:
         entry = queue[0]
         outcome, status, body = send_message(chatId, config.text + describe_delay(entry))
-        if outcome == REQUEST_OK:
+        if outcome == net.REQUEST_OK:
             queue.pop(0)
             sentCount += 1
-        elif outcome == REQUEST_FATAL:
+        elif outcome == net.REQUEST_FATAL:
             # Retrying will not help. Drop it rather than block the queue
             # behind something permanently undeliverable.
             queue.pop(0)
@@ -1111,17 +770,11 @@ def format_uptime(ms):
         return str(hours) + 'h ' + str(minutes) + 'm'
     return str(minutes) + 'm'
 
-def wifi_rssi():
-    try:
-        return str(wlan.status('rssi')) + ' dBm'
-    except Exception:
-        return 'unknown'
-
 def heartbeat_text():
     """Everything worth knowing about a device nobody is watching.
 
     Free memory leads because it is the one figure that only uptime can
-    produce: the socket-leak fix in do_request cannot be proven by any
+    produce: the socket-leak fix in net.do_request cannot be proven by any
     single reading, and getting one by hand means killing the run to reach
     a REPL -- which the watchdog then resets out from under you.
     """
@@ -1132,13 +785,13 @@ def heartbeat_text():
         'Boot: #' + str(bootNumber if bootNumber is not None else '?') +
         ' (' + resets.reset_verdict(resetInfo) + ')',
         'Free memory: ' + str(gc.mem_free()) + ' bytes',
-        'WiFi: ' + wifi_rssi() + ', ' + str(wifiData),
+        'WiFi: ' + net.wifi_rssi() + ', ' + str(net.wifiData),
         'Clock: ' + clock_status(),
         input_summary(),
         'Flash writes: ' + str(persist.state_get('writes', 0)),
     ]
-    if networkFailures:
-        lines.append('Network: ' + str(networkFailures) +
+    if net.networkFailures:
+        lines.append('Network: ' + str(net.networkFailures) +
                      ' consecutive failure(s)')
     if pendingAnnouncement is not None:
         lines.append('An announcement is still undelivered.')
@@ -1176,27 +829,19 @@ def input_summary():
 def setup_hardware():
     """Configure the pins. Must happen before anything network-related.
 
-    wlan.active(True) lives here because on the Pico W the onboard LED
-    hangs off the CYW43 chip -- machine.Pin('LED') is unusable until the
-    wireless interface is powered up.
+    The radio is powered up here (net.power_up) because on the Pico W the
+    onboard LED hangs off the CYW43 chip -- machine.Pin('LED') is unusable
+    until the wireless interface is powered up.
     """
     global doorBellInput, mac
-    wlan.active(True)
-    # Before connecting: the setting applies to the association.
-    mode = WIFI_PM_PERFORMANCE if wifiPowerSave else WIFI_PM_NONE
-    try:
-        wlan.config(pm=mode)
-        print('WiFi power save ' + ('on' if wifiPowerSave else 'off'))
-    except Exception as e:
-        # Not fatal. An unconfigurable radio still answers the door.
-        print('Could not set WiFi power mode: ' + str(e))
+    net.power_up(wifiPowerSave)
     # The CYW43-hosted LED is unusable until the radio is up, so create it
     # here and hand it to the led module, which sets a known resting state.
     led.init(machine.Pin('LED', machine.Pin.OUT))
     doorBellInput = add_input('Doorbell', doorBellPin)[IN_PIN]
     # MAC lives in the wireless chip OTP. Read it from the interface we
     # already have rather than constructing a second WLAN object.
-    mac = ubinascii.hexlify(wlan.config('mac'), ':').decode()
+    mac = ubinascii.hexlify(net.mac_address(), ':').decode()
     print('mac = ' + mac)
 
 def error_halt(message):
@@ -1255,6 +900,21 @@ def mark_boot_stable():
     applog.report('Boot ' + str(bootNumber) + ' stable after ' +
            str(config.BOOT_STABLE_MS // 1000) + 's')
 
+####################################################################################
+# Wiring.
+#
+# net cannot import the layers above it, so main hands it what it needs once,
+# at import: the credentials, and the two hooks for things that live above
+# it (resetting with a queue snapshot, and snapshotting while a connect
+# blocks). At import rather than in boot() so the hooks are in place before
+# anything can call into net, under the test harness as much as on device.
+####################################################################################
+
+net.ssid = secrets['ssid']
+net.pw = secrets['pw']
+net.on_give_up = self_reset
+net.on_wait = maybe_snapshot_queue
+
 def boot():
     """Bring the device up, hardware first.
 
@@ -1301,7 +961,7 @@ def boot():
         applog.report(armMessage)
 
     try:
-        connect_wifi()
+        net.connect_wifi()
         # Before announcing, so the startup message and its reset diagnosis
         # carry a real timestamp rather than a relative one. Best effort: a
         # failed sync just leaves the clock unsynced, and the main loop
@@ -1327,12 +987,12 @@ if __name__ == '__main__':
 
     while True:
         try:
-            if (not is_wifi_connected()):
-                connect_wifi()
+            if (not net.is_wifi_connected()):
+                net.connect_wifi()
                 announce_startup()
 
-            if networkBounceRequested:
-                bounce_wifi()
+            if net.networkBounceRequested:
+                net.bounce_wifi()
 
             poll_inputs()
             flush_announcement()
@@ -1373,7 +1033,7 @@ if __name__ == '__main__':
             break
         except Exception as e:
             print(e)
-            wlan.disconnect()
+            net.wlan.disconnect()
             # The link is down now, so the LED must say so. The old code lit
             # the "connected" indicator here, right after disconnecting,
             # leaving it lying until the next reconnect. The next loop pass
