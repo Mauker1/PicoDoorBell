@@ -319,4 +319,4 @@ def load_firmware():
 # their module-level state starts fresh. Extend as the E2 split adds modules.
 FIRMWARE_MODULES = ('main', 'config', 'wdt', 'clockmod', 'led', 'applog',
                     'persist', 'resets', 'net', 'timesync', 'ringqueue',
-                    'telegram')
+                    'telegram', 'doorbell')

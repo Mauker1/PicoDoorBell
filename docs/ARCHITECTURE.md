@@ -1293,7 +1293,7 @@ details are read.
 | File | Purpose |
 | --- | --- |
 | `main.py` | Firmware: boot, the main loop, and the wiring between modules |
-| `config.py`, `wdt.py`, `clockmod.py`, `led.py`, `applog.py`, `persist.py`, `resets.py`, `net.py`, `timesync.py`, `ringqueue.py`, `telegram.py` | Firmware modules split out of `main.py` (E2). All must be on the device; a missing one is an ImportError at boot. |
+| `config.py`, `wdt.py`, `clockmod.py`, `led.py`, `applog.py`, `persist.py`, `resets.py`, `net.py`, `timesync.py`, `ringqueue.py`, `telegram.py`, `doorbell.py` | Firmware modules split out of `main.py` (E2). All must be on the device; a missing one is an ImportError at boot. |
 | `board.py` | Pin assignments for this board. Copied from `boards/` at install time. |
 | `secrets.py` | Credentials and chat configuration. User-edited, never written by the firmware. |
 | `state.json` | Tier 2 runtime state. Firmware-written, never user-edited. |

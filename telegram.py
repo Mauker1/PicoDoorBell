@@ -64,6 +64,7 @@ def describe_api_error(status, body):
 
 def retry_after(body):
     # Telegram puts the cooldown in parameters.retry_after on a 429.
+    # Not called yet: ROADMAP A11 wires it in, holding delivery on a 429.
     if body is None:
         return 0
     try:

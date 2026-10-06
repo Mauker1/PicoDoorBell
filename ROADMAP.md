@@ -303,6 +303,36 @@ never sends, so nothing re-enters `net` mid-connect. Behavior change, so its own
 tests (a ring during a blocked connect is queued before it returns, and survives the reset),
 then bench test 5 again before promotion.
 
+### A11: Telegram rate limits: batch the backlog, honor `retry_after` (P2)
+After a long outage, `flush_queue()` sends up to `QUEUE_MAX` (20) queued rings one message
+each, in quick succession, which is exactly when Telegram's per-chat limits (on the order of
+20 messages a minute for a group or channel) are most likely to answer 429. Today a 429 is
+mishandled twice:
+
+- `net.note_request_result()` counts it as a network failure: it bumps `networkFailures`,
+  starts the **global** backoff (pausing `getUpdates` too), skips `lastNetworkSuccess`, and
+  later logs "Network recovered". But a 429 proves the link works; Telegram answered. In the
+  worst case a sustained run counts toward the 5-minute dead-network threshold and could
+  bounce the link or reset a board whose network was fine.
+- `telegram.retry_after()` parses Telegram's cooldown but has no callers.
+
+**Fix (after E2), in two parts:**
+
+1. **Batch the backlog.** When more than one ring is waiting, send one message listing them
+   (for example "3 rings while offline: 10:01, 10:05, 10:12 +0000"), keeping each ring's
+   wording (restored rings stay "around ..., before a restart"; rings with no epoch keep the
+   relative form). All-or-nothing: every ring in the batch is popped only when Telegram
+   confirms that one message, and all stay queued on failure, so B6's rule holds. A single
+   waiting ring stays the normal message. Size is no concern: 20 rings fit far under the
+   4096-character limit. Also one notification instead of twenty. Related to B7: a batch is
+   effectively one alert per burst.
+2. **Treat a 429 as "answered", and hold only delivery.** In `net`, account a 429 like
+   `REQUEST_FATAL` (no failure count, no global backoff). In `telegram`, on a 429 hold queue
+   delivery for `retry_after` seconds, capped so a bogus value cannot stall rings for long.
+   Still needed after batching: `/log` chunks and repeated sends can hit the limit too.
+
+Behavior change, so its own commit with tests, alongside A10.
+
 ---
 
 ## B. Reliability
@@ -795,6 +825,14 @@ still ignored, and the table gives A2 and D3 a natural place to land. `main` cal
 `telegram.setup(botToken, chatId)` once, which builds both URLs (not per request, which would
 allocate on every poll). The heartbeat and the startup announcement stay in `main`: they
 compose boot accounting, reset info and module state, which is `main`'s job.
+
+`doorbell.py` holds the input records, the IRQ handler factory, `add_input` and pulse judging,
+and depends only on `config` and `applog`. An accepted ring leaves through the `on_ring(width)`
+hook, which `main` wires to `ringqueue.enqueue_ring`, the same pattern as `net`'s hooks, so
+input judging never pulls in the queue, `persist` or the network stack. The pass window
+(`prevPassTicks`, `lastPassTicks`) is main-loop timing and stays with the loop:
+`poll_inputs(prev, last)` takes it per call to judge unpollable rings. `main`'s
+`input_summary()` composes `doorbell.summary_parts()` with the queue line for the heartbeat.
 
 **Functions, not classes: decided.** MicroPython charges for every class and instance, and
 there is exactly one of each thing here: one input list, one queue, one log. Classes would

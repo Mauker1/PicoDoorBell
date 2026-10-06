@@ -37,6 +37,7 @@ import net
 import timesync
 import ringqueue
 import telegram
+import doorbell
 from secrets import secrets
 
 ####################################################################################
@@ -184,27 +185,8 @@ lastLogCheck = startupTime
 ####################################################################################
 
 ####################################################################################
-# Latched inputs.
-#
-# Records are plain lists, allocated once at setup. Interrupt handlers may not
-# allocate under MicroPython, and assigning to an existing list slot does not.
-# The list-of-records shape is also what lets a second input (G9, telling the
-# building entrance from the flat door) become another entry rather than a
-# rewrite -- though only one is wired today.
+# Latched inputs live in doorbell.py.
 ####################################################################################
-
-IN_NAME = 0        # for log lines
-IN_PIN = 1         # machine.Pin
-IN_RISE = 2        # ticks_ms of the pending rising edge
-IN_FALL = 3        # ticks_ms of the falling edge that closed it
-IN_PENDING = 4     # a rising edge is waiting to be processed
-IN_COMPLETE = 5    # its falling edge has arrived, so the width is known
-IN_LAST_EDGE = 6   # debounce reference
-IN_LAST_ALERT = 7  # lockout reference
-IN_RINGS = 8       # accepted
-IN_REJECTED = 9    # too short to be real
-IN_MISSED = 10     # would have been lost by the old polling loop
-IN_FIELDS = 11
 
 ####################################################################################
 # B6 undelivered-ring queue.
@@ -213,9 +195,8 @@ IN_FIELDS = 11
 # describe_delay) stays with the Telegram code below.
 ####################################################################################
 
-inputs = []
-# Start of the current main-loop pass, and of the one before it. Used to work
-# out whether a ring landed in a window where polling could not have seen it.
+# Start of the current main-loop pass, and of the one before it. Loop timing,
+# owned here; doorbell.poll_inputs() takes them to judge unpollable rings.
 lastPassTicks = 0
 prevPassTicks = 0
 
@@ -300,116 +281,6 @@ def flush_announcement():
         pendingAnnouncement = None
     return False
 
-def make_edge_handler(entry):
-    """Build the interrupt handler for one input.
-
-    The closure is created once at setup; calling it allocates nothing,
-    which is the requirement for a MicroPython ISR. It does no I/O, no
-    string work and no logging -- it stamps two integers and returns.
-
-    Both edges are watched deliberately. Capturing the falling edge in
-    hardware means the pulse width is known exactly, even if the main loop
-    was blocked in a TLS handshake for several seconds and only gets to
-    look afterwards. Validating by re-reading the pin instead would have
-    failed in precisely that case: the pulse would be long over, the pin
-    back at ground, and a real ring discarded as noise.
-    """
-    def handler(pin):
-        now = time.ticks_ms()
-        if pin.value() == config.pressed:
-            if (entry[IN_COMPLETE] and
-                    time.ticks_diff(now, entry[IN_FALL]) < config.DEBOUNCE_MS):
-                # The line came back up almost immediately, so the fall was
-                # contact chatter on the way in, not the release. Reopen the
-                # pulse and keep the original rise time.
-                entry[IN_COMPLETE] = False
-                entry[IN_LAST_EDGE] = now
-                return
-            if entry[IN_PENDING] and not entry[IN_COMPLETE]:
-                # Already mid-pulse; nothing to do but note the edge.
-                entry[IN_LAST_EDGE] = now
-                return
-            entry[IN_LAST_EDGE] = now
-            entry[IN_RISE] = now
-            entry[IN_COMPLETE] = False
-            entry[IN_PENDING] = True
-        else:
-            entry[IN_LAST_EDGE] = now
-            if entry[IN_PENDING] and not entry[IN_COMPLETE]:
-                # Provisional. process_input() waits a debounce window
-                # before trusting it, and a rise inside that window undoes
-                # it.
-                entry[IN_FALL] = now
-                entry[IN_COMPLETE] = True
-    return handler
-
-def add_input(name, pinNumber):
-    """Register a latched input and arm its interrupt."""
-    pin = machine.Pin(pinNumber, machine.Pin.IN, machine.Pin.PULL_DOWN)
-    entry = [0] * IN_FIELDS
-    entry[IN_NAME] = name
-    entry[IN_PIN] = pin
-    entry[IN_PENDING] = False
-    entry[IN_COMPLETE] = False
-    inputs.append(entry)
-    pin.irq(handler=make_edge_handler(entry),
-            trigger=machine.Pin.IRQ_RISING | machine.Pin.IRQ_FALLING)
-    print(name + ' input ready on GP' + str(pinNumber))
-    return entry
-
-def was_unpollable(entry):
-    """Would the old polling loop have missed this ring?
-
-    True when the whole pulse fell between two passes of the main loop, so
-    no poll could have observed it. Counted rather than acted upon: it
-    turns 'we might have been dropping rings' into a number.
-    """
-    if not entry[IN_COMPLETE]:
-        return False
-    return (time.ticks_diff(entry[IN_RISE], prevPassTicks) > 0 and
-            time.ticks_diff(lastPassTicks, entry[IN_FALL]) > 0)
-
-def process_input(entry):
-    """Decide what a latched edge was, and act on it."""
-    now = time.ticks_ms()
-    width = None
-    if entry[IN_COMPLETE]:
-        if time.ticks_diff(now, entry[IN_FALL]) < config.DEBOUNCE_MS:
-            # The close is still provisional: the line may yet bounce back
-            # up and prove this was chatter rather than the release.
-            return
-        width = time.ticks_diff(entry[IN_FALL], entry[IN_RISE])
-    elif time.ticks_diff(now, entry[IN_RISE]) > config.STUCK_INPUT_MS:
-        # Still high long after any real ring would have ended.
-        entry[IN_PENDING] = False
-        applog.report(entry[IN_NAME] + ' input stuck high')
-        return
-    else:
-        # Mid-pulse. Leave it latched and look again next pass.
-        return
-
-    entry[IN_PENDING] = False
-
-    if width < config.MIN_PULSE_MS:
-        entry[IN_REJECTED] += 1
-        applog.report(entry[IN_NAME] + ' transient ignored, ' + str(width) + 'ms')
-        return
-
-    if was_unpollable(entry):
-        entry[IN_MISSED] += 1
-
-    if (entry[IN_RINGS] > 0 and
-            time.ticks_diff(now, entry[IN_LAST_ALERT]) < config.ALERT_LOCKOUT_MS):
-        # Same ring, or an impatient second press. One alert is enough.
-        return
-
-    entry[IN_RINGS] += 1
-    entry[IN_LAST_ALERT] = now
-    applog.report(entry[IN_NAME] + ' ring, ' + str(width) + 'ms')
-    # Queued rather than sent. Delivery is the queue's job, and a ring is
-    # not discarded until Telegram confirms it.
-    ringqueue.enqueue_ring(width)
-
 def clock_status():
     """One-line clock state for the heartbeat.
 
@@ -423,11 +294,6 @@ def clock_status():
     since = time.ticks_diff(time.ticks_ms(), timesync.lastNtpSync)
     return clockmod.format_timestamp(clockmod.clock_now(), utcOffset) + \
         ' (synced ' + format_uptime(since) + ' ago)'
-
-def poll_inputs():
-    for entry in inputs:
-        if entry[IN_PENDING]:
-            process_input(entry)
 
 def format_uptime(ms):
     seconds = ms // 1000
@@ -489,13 +355,8 @@ def maybe_heartbeat():
     return True
 
 def input_summary():
-    """One line per input, for the heartbeat (C3)."""
-    parts = []
-    for entry in inputs:
-        parts.append(entry[IN_NAME] + ': ' + str(entry[IN_RINGS]) +
-                     ' rings, ' + str(entry[IN_REJECTED]) +
-                     ' transients, ' + str(entry[IN_MISSED]) +
-                     ' unpollable')
+    """The inputs and the queue, for the heartbeat (C3)."""
+    parts = doorbell.summary_parts()
     parts.append('queue: ' + str(len(ringqueue.queue)) + ' waiting, ' +
                  str(ringqueue.queueDropped) + ' dropped')
     return '; '.join(parts)
@@ -512,7 +373,7 @@ def setup_hardware():
     # The CYW43-hosted LED is unusable until the radio is up, so create it
     # here and hand it to the led module, which sets a known resting state.
     led.init(machine.Pin('LED', machine.Pin.OUT))
-    doorBellInput = add_input('Doorbell', doorBellPin)[IN_PIN]
+    doorBellInput = doorbell.add_input('Doorbell', doorBellPin)[doorbell.IN_PIN]
     # MAC lives in the wireless chip OTP. Read it from the interface we
     # already have rather than constructing a second WLAN object.
     mac = ubinascii.hexlify(net.mac_address(), ':').decode()
@@ -590,6 +451,9 @@ net.ssid = secrets['ssid']
 net.pw = secrets['pw']
 net.on_give_up = self_reset
 net.on_wait = ringqueue.maybe_snapshot_queue
+
+# doorbell: an accepted ring goes to the queue, which lives above it.
+doorbell.on_ring = ringqueue.enqueue_ring
 
 # Telegram: credentials, and the command table. /status needs the heartbeat,
 # which lives here, so main supplies its handler; /log is telegram's own.
@@ -676,7 +540,7 @@ if __name__ == '__main__':
             if net.networkBounceRequested:
                 net.bounce_wifi()
 
-            poll_inputs()
+            doorbell.poll_inputs(prevPassTicks, lastPassTicks)
             flush_announcement()
             telegram.flush_queue()
             ringqueue.maybe_snapshot_queue()
