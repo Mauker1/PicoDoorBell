@@ -8,7 +8,7 @@ Seven things, in increasing order of how long they take:
   2. No em or en dashes in any .py or .md file.
   3. No spaced hyphen standing in for a dash, in any .md file.
   4. Every .py file byte-compiles.
-  5. No firmware function assigns a module global without declaring it.
+  5. Firmware `global` declarations match what each function rebinds.
   6. ROADMAP.md is structurally sound (tools/check_roadmap.py).
   7. Every suite in tests/ passes.
 
@@ -105,7 +105,14 @@ for base, dirs, names in os.walk(ROOT):
                 hit = any(' - ' in c for c in line.split('|')
                           if c.strip() != '-')
             else:
-                hit = bool(re.search(r'\S - \w', line))
+                # Drop blockquote markers and a leading list marker, then look
+                # for a spaced hyphen before anything a word can start with:
+                # letters, but also code, quotes and emphasis, which the first
+                # version of this check let through.
+                body = re.sub(r'^\s*(>\s*)*', '', line)
+                if body.startswith('- '):
+                    body = body[2:]
+                hit = bool(re.search(r'\S - [\w`"\'*(\[]', body))
             if hit:
                 bad.append('%s:%d %s' % (relative(path), i, line.strip()[:70]))
 report(not bad, 'no spaced hyphens in prose', '\n'.join(bad[:20]))
@@ -127,8 +134,11 @@ report(not bad, 'byte-compiles', '\n'.join(bad))
 # A function that assigns a module-level name without `global` silently
 # creates a local instead: the module value never changes, and nothing errors
 # unless the name is also read first. E2 moved the loop into run_pass() for
-# exactly this reason; this keeps the whole class out of the firmware. Scans
-# the top-level modules (the files that go on the device), not tests/tools.
+# exactly this reason; this keeps the whole class out of the firmware. The
+# converse fails too: a `global` for a name the function never binds is at
+# best redundant (in-place mutation such as d[k] = v needs no declaration)
+# and at worst misleading about who rebinds what. Scans the top-level modules
+# (the files that go on the device), not tests/tools.
 def module_level_names(tree):
     """Names bound at module level, including inside top-level try/if blocks
     (the guarded ntptime import), but never inside a function."""
@@ -156,7 +166,7 @@ def stores_in(fn):
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.Lambda)):
                 continue
-            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+            if isinstance(child, ast.Name) and isinstance(child.ctx, (ast.Store, ast.Del)):
                 found.add(child.id)
             if isinstance(child, ast.ExceptHandler) and child.name:
                 found.add(child.name)
@@ -177,11 +187,16 @@ for name in sorted(os.listdir(ROOT)):
             if isinstance(n, ast.Global):
                 declared |= set(n.names)
         params = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
-        shadow = (stores_in(fn) & top) - declared - params
+        bound = stores_in(fn)
+        shadow = (bound & top) - declared - params
         if shadow:
             bad.append('%s:%d %s() assigns %s without global'
                        % (name, fn.lineno, fn.name, ', '.join(sorted(shadow))))
-report(not bad, 'no implicit globals', '\n'.join(bad))
+        idle = declared - bound
+        if idle:
+            bad.append('%s:%d %s() declares global %s but never rebinds it'
+                       % (name, fn.lineno, fn.name, ', '.join(sorted(idle))))
+report(not bad, 'globals match rebinding', '\n'.join(bad))
 
 # --- 6. Roadmap structure --------------------------------------------------
 checker = os.path.join(ROOT, 'tools', 'check_roadmap.py')

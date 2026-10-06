@@ -130,7 +130,6 @@ def save_state():
     under littlefs, so a power cut can never leave a half-written state
     file -- it leaves either the old copy or the new one.
     """
-    global state
     if not stateWritable:
         return False
     state['writes'] = state.get('writes', 0) + 1
@@ -165,7 +164,6 @@ def state_set(key, value):
     The in-RAM dict mirrors what is on flash, so comparing here is the
     read-before-write check -- an unchanged value costs no erase.
     """
-    global state
     if state.get(key, None) == value:
         return False
     state[key] = value

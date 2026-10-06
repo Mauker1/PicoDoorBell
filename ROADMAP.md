@@ -246,7 +246,7 @@ Call `getUpdates` with `offset=-1` once at startup to discard the buffered backl
 `/log` from hours ago replays on every reboot.
 
 ### A8: Query string cleanup (P3)
-`?offset=X` then `&`, and drop the `chat_id` parameter entirely - `getUpdates` does not
+`?offset=X` then `&`, and drop the `chat_id` parameter entirely: `getUpdates` does not
 accept it and Telegram silently ignores it.
 
 > **Note:** this works today. A `?` is legal inside a query component, so the parameter
@@ -1041,7 +1041,7 @@ cable runs near the doorbell wiring or mains: rerouting may help as much as the 
 
 > This establishes that the RUN line *can* be disturbed trivially. It does not yet prove
 > the mains-switching reboots share that mechanism: plugging a connector is a physical
-> disturbance, a light switch is an electromagnetic one. C4 closes that gap - `chip=RUN` on
+> disturbance, a light switch is an electromagnetic one. C4 closes that gap: `chip=RUN` on
 > a reboot coinciding with a light switch is the confirmation.
 
 ### ✅ G7: Characterise the ring pulse (P1, was blocking B1)
@@ -1318,7 +1318,7 @@ Nothing to do until the upgrade happens; recorded so it is not rediscovered late
 ## Sequencing
 
 Two axes: sections say what *kind* of work an item is, phases say *when*. An item's
-priority tag and its phase are independent - `E2` is P1 but waits on the production
+priority tag and its phase are independent: `E2` is P1 but waits on the production
 milestone below, because it should not happen before the current tree has proven itself in
 place.
 
@@ -1559,7 +1559,7 @@ Open items for the bench unit, none yet answered:
    Affects cell longevity and what "on battery" means as a test condition.
 7. 🔬 **RUN pin pickup: elimination test running on production.** The external reset cable
    is disconnected on the production unit, firmware unchanged, so the board carries exactly
-   one changed variable. Record the disconnect date and the prior reboot rate - "none since"
+   one changed variable. Record the disconnect date and the prior reboot rate; "none since"
    only means something against a baseline. If the trigger is reproducible (switching the
    offending light), test actively rather than waiting.
 
@@ -1598,9 +1598,9 @@ Open items for the bench unit, none yet answered:
    Mating *and* un-mating the reset connector both reset the board, most of the time,
    without the button being pressed. Two hypotheses were built on this and both failed:
 
-  , *Poor noise immunity on a high-impedance RUN node*, withdrawn. Symmetric behaviour in
+   - *Poor noise immunity on a high-impedance RUN node*: withdrawn. Symmetric behaviour in
      both directions of travel is not what charge injection looks like.
-  , *Marginal contact, disturbed by vibration*, ruled out by direct test. Knocking the
+   - *Marginal contact, disturbed by vibration*: ruled out by direct test. Knocking the
      wall, the casing, the carrier board and the connector itself, and moving the seated
      connector side to side, produced **no** reboot. The contact is sound.
 
@@ -1656,55 +1656,56 @@ Open items for the bench unit, none yet answered:
    coinciding with a TX burst is a compound trigger that would be rare, unreproducible on
    demand, and still correlated with switching.
 
-10. 🔬 **Common-mode coupling across the optocoupler: hypothesis, speculative.**
-    The doorbell is a **Ritto TwinBus**, roughly 24 V, fed from a PSU elsewhere in the
-    building: a different circuit from both the Pico and the switched lights. An earlier
-    version of this item assumed a shared circuit and is superseded.
+#### 10. 🔬 Common-mode coupling across the optocoupler (hypothesis, speculative)
 
-    The separate PSU creates two independent ground references bridged by a single component:
-    the Pico sits on the flat's mains via its USB adapter, the TwinBus sits on the building's
-    PSU, and the optocoupler is the only thing spanning them. A step in the potential
-    difference between those domains appears across the isolation barrier. Isolation blocks
-    DC, but the barrier's inter-electrode capacitance (order 1 pF) passes displacement
-    current on a fast dV/dt. Switching a load in the flat shifts the local reference relative
-    to the building's.
+The doorbell is a **Ritto TwinBus**, roughly 24 V, fed from a PSU elsewhere in the
+building: a different circuit from both the Pico and the switched lights. An earlier
+version of this item assumed a shared circuit and is superseded.
 
-    Consistent with observations for the same reason as the superseded version: the LED side
-    needs real forward current for a real duration, while displacement current arrives on the
-    output side by a different path. Resets without phantom rings is what it predicts.
+The separate PSU creates two independent ground references bridged by a single component:
+the Pico sits on the flat's mains via its USB adapter, the TwinBus sits on the building's
+PSU, and the optocoupler is the only thing spanning them. A step in the potential
+difference between those domains appears across the isolation barrier. Isolation blocks
+DC, but the barrier's inter-electrode capacitance (order 1 pF) passes displacement
+current on a fast dV/dt. Switching a load in the flat shifts the local reference relative
+to the building's.
 
-    **New testable prediction.** TwinBus is a building-wide bus carrying other residents'
-    calls and door-opener actuations. If this mechanism is real, reboots should correlate
-    with **neighbours' doorbell activity**, not only with the flat's lights. Checkable once
-    C4 is on production, using Telegram's own message timestamps.
+Consistent with observations for the same reason as the superseded version: the LED side
+needs real forward current for a real duration, while displacement current arrives on the
+output side by a different path. Resets without phantom rings is what it predicts.
 
-    **The manufacturer acknowledges this failure class.** The TwinBus system handbook carries
-    an explicit warning that devices with strong magnetic fields: contactors, transformers -
-    must not be installed near the power supply or auxiliary units, because induced voltage
-    spikes cause malfunctions. Ritto is documenting susceptibility to precisely the kind of
-    transient under discussion here.
+**New testable prediction.** TwinBus is a building-wide bus carrying other residents'
+calls and door-opener actuations. If this mechanism is real, reboots should correlate
+with **neighbours' doorbell activity**, not only with the flat's lights. Checkable once
+C4 is on production, using Telegram's own message timestamps.
 
-    **Installation rule worth checking on site.** The handbook requires mains and TwinBus
-    wiring to be routed separately to satisfy VDE 0800: 10 cm apart, or with a divider where
-    they share a conduit. Older buildings frequently do not respect this. If the separation
-    is absent anywhere along the run, the coupling path becomes materially more plausible.
+**The manufacturer acknowledges this failure class.** The TwinBus system handbook carries
+an explicit warning that devices with strong magnetic fields: contactors, transformers -
+must not be installed near the power supply or auxiliary units, because induced voltage
+spikes cause malfunctions. Ritto is documenting susceptibility to precisely the kind of
+transient under discussion here.
 
-    **Prior art warning.** `tuxuser/ritto_doorbell`, an ESP8266 integration with the same
-    TwinBus system, is archived with a note that it never worked reliably. The kind of
-    unreliability is unstated, so this is suggestive rather than diagnostic, but it is a
-    second known instance of a TwinBus tap misbehaving.
+**Installation rule worth checking on site.** The handbook requires mains and TwinBus
+wiring to be routed separately to satisfy VDE 0800: 10 cm apart, or with a divider where
+they share a conduit. Older buildings frequently do not respect this. If the separation
+is absent anywhere along the run, the coupling path becomes materially more plausible.
 
-    *(An earlier note here questioned whether "pin 04" meant that project's GPIO04, which is
-    a mute relay output. It refers to a terminal on the Ritto mainboard itself, per their
-    TwinBus schematic. Retracted.)*
+**Prior art warning.** `tuxuser/ritto_doorbell`, an ESP8266 integration with the same
+TwinBus system, is archived with a note that it never worked reliably. The kind of
+unreliability is unstated, so this is suggestive rather than diagnostic, but it is a
+second known instance of a TwinBus tap misbehaving.
 
-    Mitigations if confirmed, cheapest first: shorten the optocoupler-to-Pico wiring, add an
-    RC on the optocoupler output, fit a ferrite on the doorbell pair, separate the two
-    harnesses.
+*(An earlier note here questioned whether "pin 04" meant that project's GPIO04, which is
+a mute relay output. It refers to a terminal on the Ritto mainboard itself, per their
+TwinBus schematic. Retracted.)*
 
-    *Note on sources:* `deh0511.de/twinbus`, the origin of the pinout diagram both prior
-    projects cite, is a frameset and could not be retrieved programmatically. The pin table
-    would need pasting in by hand.
+Mitigations if confirmed, cheapest first: shorten the optocoupler-to-Pico wiring, add an
+RC on the optocoupler output, fit a ferrite on the doorbell pair, separate the two
+harnesses.
 
-    C4 adjudicates regardless: `chip=RUN` keeps it alive, `chip=POR/BOD` points at the
-    supply.
+*Note on sources:* `deh0511.de/twinbus`, the origin of the pinout diagram both prior
+projects cite, is a frameset and could not be retrieved programmatically. The pin table
+would need pasting in by hand.
+
+C4 adjudicates regardless: `chip=RUN` keeps it alive, `chip=POR/BOD` points at the
+supply.

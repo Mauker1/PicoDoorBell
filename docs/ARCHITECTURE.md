@@ -222,7 +222,7 @@ that actually matters.
 
 ---
 
-## Tier 2 - `state.json`
+## Tier 2: `state.json`
 
 ### Schema
 
@@ -261,7 +261,7 @@ rebound; nothing outside the module assigns it, and its one dependency is
 `state_set` compares against the in-RAM mirror before writing. Because that
 mirror is loaded from flash and only mutated through `state_set`, the
 comparison **is** the read-before-write check. Setting an unchanged value costs
-no erase, so callers may set defensively - `state_set('chatId', x)` on every
+no erase, so callers may set defensively: `state_set('chatId', x)` on every
 API error is safe.
 
 ### Atomicity
@@ -1073,7 +1073,7 @@ an AP that keeps rejecting the board produces a reset every few minutes, and eac
 one destroys the log explaining why.
 
 `self_reset()` therefore writes a short code to scratch 0, and the next boot
-reports it - `reason=WiFi_unreachable` or `reason=network_dead_after_a_bounce` in
+reports it: `reason=WiFi_unreachable` or `reason=network_dead_after_a_bounce` in
 the summary. One fact, carried across, at no cost in flash.
 
 ### Self-inflicted resets are marked
