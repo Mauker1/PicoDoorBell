@@ -22,6 +22,7 @@
 # SOFTWARE.
 ####################################################################################
 
+# Each module's job: docs/ARCHITECTURE.md (on-device files) and ROADMAP.md (E2).
 import ubinascii
 import machine
 import time
@@ -100,13 +101,6 @@ telegram.utcOffset = utcOffset
 doorBellInput = None
 mac = ''
 
-# Credentials from secrets.py are handed to net and telegram in the wiring
-# block before boot(), so main stays their single reader.
-
-# Messages and commands now live in config.py.
-
-# The in-memory log lives in applog.py.
-
 # Flags
 isStartup = True
 
@@ -136,72 +130,10 @@ uptimeMs = 0
 startupTime = time.ticks_ms()
 lastLogCheck = startupTime
 
-####################################################################################
-# C1 wall clock.
-#
-# ticks_ms answers "how long since boot", never "what time is it", and it
-# wraps at ~12.4 days. A log line reading 3847221 tells an incident report
-# nothing. NTP gives real time, but polling it per event would be absurd, so
-# one sync captures an anchor: the epoch at a known ticks_ms, from which any
-# later wall-clock time is anchor + elapsed. ticks_diff makes the elapsed part
-# wrap-safe, so the derived clock outlives the ticks_ms wrap the raw counter
-# cannot.
-#
-# The anchor lives in RAM and is authoritative for "is the clock live". The
-# copy in state.json (epochAnchor) is a fallback for aging rings recovered
-# after a reset, and is coarse by nature: the device may have been unpowered
-# for hours between the anchor being written and the next boot reading it, so
-# a restored ring's time is always tagged as approximate. This matches the
-# existing honesty about restored rings not being ageable.
-#
-# NTP sync is never fatal, exactly like announce_startup(): a device with no
-# clock still answers the door, and every timestamp simply stays marked as
-# relative until a sync lands.
-####################################################################################
-
-# NTP timing and the epoch sanity floor now live in config.py.
-
-# The wall-clock anchor and its pure reads live in clockmod.py; the NTP sync
-# side (sync_clock, maybe_resync_clock, lastNtpSync) lives in timesync.py.
-
-####################################################################################
-# B2 watchdog.
-#
-# The RP2040 watchdog cannot exceed roughly 8.3 s, which is uncomfortably close to
-# what one loop pass can legitimately take. Measured on hardware: a Telegram round
-# trip is 1-2 s, and a worst-case pass can hold a send, a getUpdates and a flash
-# sector erase.
-#
-# The margin is therefore bought by feeding from inside the blocking work rather
-# than only at the top of the loop -- see wdt.feed_watchdog() call sites. B1 was a
-# prerequisite: with its 5 s post-press sleep still in place, a press followed by
-# a getUpdates could pass nine seconds without a feed.
-#
-# Once armed, an RP2040 watchdog cannot be disarmed.
-####################################################################################
-
-####################################################################################
-# B1 input timings now live in config.py.
-####################################################################################
-
-####################################################################################
-# Latched inputs live in doorbell.py.
-####################################################################################
-
-####################################################################################
-# B6 undelivered-ring queue.
-#
-# Storage and persistence live in ringqueue.py. Delivery (flush_queue,
-# describe_delay) stays with the Telegram code below.
-####################################################################################
-
 # Start of the current main-loop pass, and of the one before it. Loop timing,
 # owned here; doorbell.poll_inputs() takes them to judge unpollable rings.
 lastPassTicks = 0
 prevPassTicks = 0
-
-
-# Telegram transport, commands and /log live in telegram.py.
 
 ####################################################################################
 # Boot accounting.
@@ -215,12 +147,6 @@ bootNumber = None
 bootRecorded = False
 bootStableAt = 0
 resetInfo = None
-
-####################################################################################
-# G1 LED state machine.
-####################################################################################
-# G1 LED state machine now lives in led.py.
-####################################################################################
 
 def self_reset(reason, code=0):
     """Reset deliberately, leaving a marker so the next boot knows.
@@ -522,49 +448,53 @@ def boot():
         applog.append_to_log('Startup networking failed: ' + str(e))
         print('Startup networking failed: ' + str(e))
 
-# Entry-point guard. On the device main.py is __main__, so boot() runs and
-# the loop starts exactly as before. Under the test harness main.py is
-# imported, not run, so __name__ is 'main' and neither fires: the tests get
-# every function and module global without boot() doing real work or the
-# loop never returning. This is what lets the suites use `import main`
-# instead of AST-stripping the loop out, and what makes the E2 split safe.
-if __name__ == '__main__':
-    boot()
+def run_pass():
+    """One main-loop pass: network upkeep, inputs, delivery, housekeeping.
 
+    A function rather than inline loop code, so its state is explicit: the
+    four loop globals below are declared, not implicit module-scope
+    assignments that would silently become locals the day this moved. It
+    raises on error; run() decides recovery. A future battery build (G5) can
+    drive this from a sleep-and-wake loop instead of run().
+    """
+    global lastLogCheck, prevPassTicks, lastPassTicks, uptimeMs
+    if (not net.is_wifi_connected()):
+        net.connect_wifi()
+        announce_startup()
+
+    if net.networkBounceRequested:
+        net.bounce_wifi()
+
+    doorbell.poll_inputs(prevPassTicks, lastPassTicks)
+    flush_announcement()
+    telegram.flush_queue()
+    ringqueue.maybe_snapshot_queue()
+
+    # Check for new messages
+    if (time.ticks_diff(time.ticks_ms(), lastLogCheck) > config.logCheckInterval):
+        # Log only. Printed once a minute it was pure noise, and it
+        # crowded out the events worth seeing in a long run.
+        applog.append_to_log('Checking for new messages')
+        telegram.read_message(telegram.chatId)
+        lastLogCheck = time.ticks_ms()
+
+    mark_boot_stable()
+    wdt.feed_watchdog()
+
+    # Record when this pass ran, so was_unpollable() can tell whether
+    # a ring landed in a gap the old polling loop could not have
+    # covered.
+    prevPassTicks = lastPassTicks
+    lastPassTicks = time.ticks_ms()
+    uptimeMs += time.ticks_diff(lastPassTicks, prevPassTicks)
+    timesync.maybe_resync_clock()
+    maybe_heartbeat()
+
+def run():
+    """The mains-powered loop: one pass, a pause, forever."""
     while True:
         try:
-            if (not net.is_wifi_connected()):
-                net.connect_wifi()
-                announce_startup()
-
-            if net.networkBounceRequested:
-                net.bounce_wifi()
-
-            doorbell.poll_inputs(prevPassTicks, lastPassTicks)
-            flush_announcement()
-            telegram.flush_queue()
-            ringqueue.maybe_snapshot_queue()
-
-            # Check for new messages
-            if (time.ticks_diff(time.ticks_ms(), lastLogCheck) > config.logCheckInterval):
-                # Log only. Printed once a minute it was pure noise, and it
-                # crowded out the events worth seeing in a long run.
-                applog.append_to_log('Checking for new messages')
-                telegram.read_message(telegram.chatId)
-                lastLogCheck = time.ticks_ms()
-
-            mark_boot_stable()
-            wdt.feed_watchdog()
-
-            # Record when this pass ran, so was_unpollable() can tell whether
-            # a ring landed in a gap the old polling loop could not have
-            # covered.
-            prevPassTicks = lastPassTicks
-            lastPassTicks = time.ticks_ms()
-            uptimeMs += time.ticks_diff(lastPassTicks, prevPassTicks)
-            timesync.maybe_resync_clock()
-            maybe_heartbeat()
-
+            run_pass()
             wdt.sleep_fed(config.loopDelay)
 
         except KeyboardInterrupt:
@@ -590,3 +520,13 @@ if __name__ == '__main__':
             # Grace period, in fed slices. Left as a single sleep(10) this
             # would outlast the watchdog and reset the board on every error.
             wdt.sleep_fed(10)
+
+# Entry-point guard. On the device main.py is __main__, so boot() runs and
+# the loop starts exactly as before. Under the test harness main.py is
+# imported, not run, so __name__ is 'main' and neither fires: the tests get
+# every function and module global without boot() doing real work or the
+# loop never returning. This is what lets the suites use `import main`
+# instead of AST-stripping the loop out, and what makes the E2 split safe.
+if __name__ == '__main__':
+    boot()
+    run()

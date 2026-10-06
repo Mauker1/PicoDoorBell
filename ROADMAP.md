@@ -721,8 +721,17 @@ active-high/active-low polarity, feature toggles.
 The README's "Final details" section is currently a list of *"now go edit source code"*
 instructions. It should become *"edit `config.py`."*
 
-### E2: Module split (P1, raised)
-`main.py` is **1720 lines**, up from 209 at the start of this work. It was P2 when the file
+### 🧪 E2: Module split (P1, raised)
+
+> **Still unverified:** code complete, bench verification pending. Steps 1 to 10 took
+> `main.py` from 1720 lines to 532, across 13 modules; the wrap-up made the loop a function
+> (`run_pass()`, driven by `run()`) and added a gate check that rejects implicit globals. The
+> bench plan ran on the step 8 tree (`cc9d72e`) and passed except test 5.2, which found A10, a
+> gap that predates the split. To close: finish the soak, run the final tree on the bench for
+> a few days, and take the free-memory reading at a heartbeat with the log full (the 7-minute
+> reading of 154,608 bytes is not comparable to production's ~146 KB, which has a full log).
+
+`main.py` was **1720 lines**, up from 209 at the start of this work. It was P2 when the file
 was small enough that the cost of leaving it alone was theoretical. It no longer is.
 
 **Proposed layering.** Acyclic, each module depending only on those above it. Revised from
@@ -754,8 +763,8 @@ way everything may depend on `config`. That is what lets `led.py` be atomic: it 
 watchdog-safe blink timing (`wdt`), not a sideways reach into `net`. The wall clock splits:
 the pure reads and formatting are leaf math in `clockmod.py` (so `applog`'s `log_prefix` can
 use them with no cycle), while `sync_clock` and `maybe_resync_clock`, which need net, persist
-and report, live in `telegram.py` and set the anchor through a `clockmod` setter. Without the
-split, `applog` to clock to `telegram` to `applog` would be a cycle.
+and applog, live in `timesync.py` and set the anchor through a `clockmod` setter. Without the
+split, `applog` to clock to `net` to `applog` would be a cycle.
 
 `doorbell.py` deliberately does **not** send. It latches and judges; delivery is
 `telegram.py`'s job. That is what keeps the graph acyclic, and it already reflects how B1
@@ -853,17 +862,14 @@ break. That is F1's remaining work: rewrite them as plain imports, one module at
 moving code only once the tests for it import cleanly. Tests first, then the move. That is
 the opposite of how it is tempting to do it.
 
-**Watch for implicit globals.** The main loop runs at module scope today, so assignments
-like `lastPassTicks = ...` mutate globals without declaration. Every one becomes a bug the
-moment it moves inside a function. There are several.
-
-Roughly: `config.py`, `wifi.py`, `telegram.py`, `applog.py`, `doorbell.py`, and a thin
-`main.py`.
-
-> **Caution:** the current `while True` loop runs at module scope, so assignments like
-> `lastLogCheck = ...` mutate globals implicitly. Every one of these becomes a genuine bug
-> the moment the loop is wrapped in a function. This refactor must be done deliberately,
-> not mechanically, and **after** F1.
+**Implicit globals: resolved.** The loop used to run at module scope, so its assignments
+(`lastLogCheck`, `prevPassTicks`, `lastPassTicks`, `uptimeMs`) mutated globals without
+declaration, and each would have become a silent local the moment the loop moved into a
+function. The wrap-up did that move deliberately: `run_pass()` declares all four, a test runs
+two real passes and checks each one moved, and `tools/check.py` now fails the gate on any
+firmware function that assigns a module global without declaring it, so the class cannot
+come back. `run_pass()` is also what G5 needs: a battery build can drive it from a
+sleep-and-wake loop instead of `run()`.
 
 ### E3: Notifier abstraction (P3)
 A minimal `send(event)` interface so Telegram becomes one backend among several. Enables E4
@@ -1357,9 +1363,9 @@ that has never run in place would confuse both.
 
 `F1` → `E2` → `F2` → `F3`
 
-`E2` is the highest-priority item left: `main.py` is 1720 lines, and every correctness
-change in Phase 3 makes it longer. Splitting first means those changes land in files that
-make sense.
+`E2` was the highest-priority item: `main.py` was 1720 lines, and every correctness change
+in Phase 3 would have made it longer. It is now code complete (see its entry), so those
+changes land in files that make sense.
 
 **Tests before the refactor, not after.** All eight test files reach into `main.py` by AST
 extraction and break on the first move. `F1` rewrites them as plain imports, one module at a

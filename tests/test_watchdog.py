@@ -96,7 +96,8 @@ check('a zero wait feeds once', WDT.instances[0].feeds - before, 1)
 
 # --- 4. No unfed sleep long enough to bite ---------------------------------
 # Static check: every time.sleep() left in the source must be short, since
-# only sleep_fed() feeds. blink_onboard_led and error_halt are the survivors.
+# only sleep_fed() feeds. error_halt (its unfed fast blink is deliberate) and
+# self_reset (one second, just before machine.reset) are the survivors.
 # Scans every firmware module, not just main.py: the invariant is
 # firmware-wide, and the E2 split moves code out of main one module at a time.
 long_sleeps = []

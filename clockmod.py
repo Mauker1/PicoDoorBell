@@ -10,9 +10,9 @@
 # This module is the pure read side: the RAM anchor and the functions that read
 # and format it. It imports only time, so it is a leaf anything may depend on
 # (in particular applog's log_prefix). The sync side (sync_clock,
-# maybe_resync_clock) lives with the caller that has NTP, net, persist and
-# report; it drives this module through set_anchor(). Keeping the two apart is
-# what stops applog to clock to telegram to applog from being a cycle.
+# maybe_resync_clock) lives in timesync.py, which has NTP, net, persist and
+# applog; it drives this module through set_anchor(). Keeping the two apart is
+# what stops applog to clock to net to applog from being a cycle.
 #
 # The flash copy of the anchor (epochAnchor in state.json) is the sync side's
 # concern, not this module's: a coarse fallback for aging rings after a reset.

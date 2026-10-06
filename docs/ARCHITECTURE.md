@@ -1338,9 +1338,10 @@ boot ordering: that the doorbell pin is configured before any network call, and
 that a failing startup send no longer prevents it. The baseline firmware fails
 this test: it dies with `OSError` and never reaches `machine.Pin(16)`.
 
-Both files work by extracting code from `main.py` via AST and running it in a
-synthetic namespace: possible only because those functions depend on
-nothing but `json` and `os`, and because the trailing `while True:` loop can be
-stripped from the tree before executing it. **This is temporary scaffolding.**
-Once the code is split into modules, both files should be rewritten as plain
-imports.
+Every suite imports the firmware for real, through `stubs.load_firmware()`,
+which installs the hardware stubs and reloads every module in
+`FIRMWARE_MODULES`, so no test sees another's state. The `__name__` guard at the
+foot of `main.py` keeps `boot()` and `run()` from firing on import; a suite calls
+`boot()` itself when it needs one, and `test_boot.py` drives real loop passes
+through `run_pass()`. The earlier approach, extracting functions by AST and
+stripping the trailing loop, is gone.

@@ -120,10 +120,3 @@ def led_alert():
     slower ones) so the local feedback tells a ring apart from a reconnect.
     """
     blink_led(2, on_ms=80, off_ms=80)
-
-
-# Kept as a thin alias: the fatal path and older call sites read more clearly
-# as a plain blink count, and routing through blink_led makes even that
-# watchdog-safe.
-def blink_onboard_led(num_blinks):
-    blink_led(num_blinks)

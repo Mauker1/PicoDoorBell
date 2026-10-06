@@ -2,19 +2,21 @@
 
     python3 tools/check.py
 
-Four things, in increasing order of how long they take:
+Seven things, in increasing order of how long they take:
 
   1. Every .py file ends with exactly one newline.
   2. No em or en dashes in any .py or .md file.
   3. No spaced hyphen standing in for a dash, in any .md file.
   4. Every .py file byte-compiles.
-  5. ROADMAP.md is structurally sound (tools/check_roadmap.py).
-  6. Every suite in tests/ passes.
+  5. No firmware function assigns a module global without declaring it.
+  6. ROADMAP.md is structurally sound (tools/check_roadmap.py).
+  7. Every suite in tests/ passes.
 
 Exits non-zero if anything fails, so it works as a pre-commit hook or a CI
 step. Test output is captured and shown only for failures, since a passing
 run prints several hundred lines nobody reads.
 """
+import ast
 import os
 import py_compile
 import re
@@ -121,7 +123,67 @@ with tempfile.TemporaryDirectory() as cache:
             bad.append(str(e).strip())
 report(not bad, 'byte-compiles', '\n'.join(bad))
 
-# --- 5. Roadmap structure --------------------------------------------------
+# --- 5. No implicit globals ------------------------------------------------
+# A function that assigns a module-level name without `global` silently
+# creates a local instead: the module value never changes, and nothing errors
+# unless the name is also read first. E2 moved the loop into run_pass() for
+# exactly this reason; this keeps the whole class out of the firmware. Scans
+# the top-level modules (the files that go on the device), not tests/tools.
+def module_level_names(tree):
+    """Names bound at module level, including inside top-level try/if blocks
+    (the guarded ntptime import), but never inside a function."""
+    names = set()
+    def visit(node):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.ClassDef)):
+                names.add(child.name)
+                continue
+            if isinstance(child, ast.Lambda):
+                continue
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+                names.add(child.id)
+            if isinstance(child, (ast.Import, ast.ImportFrom)):
+                for a in child.names:
+                    names.add((a.asname or a.name).split('.')[0])
+            visit(child)
+    visit(tree)
+    return names
+
+def stores_in(fn):
+    """Names a function body binds, not counting nested functions."""
+    found = set()
+    def visit(node):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.Lambda)):
+                continue
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+                found.add(child.id)
+            if isinstance(child, ast.ExceptHandler) and child.name:
+                found.add(child.name)
+            visit(child)
+    visit(fn)
+    return found
+
+bad = []
+for name in sorted(os.listdir(ROOT)):
+    if not name.endswith('.py'):
+        continue
+    path = os.path.join(ROOT, name)
+    tree = ast.parse(open(path, encoding='utf-8').read())
+    top = module_level_names(tree)
+    for fn in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)):
+        declared = set()
+        for n in ast.walk(fn):
+            if isinstance(n, ast.Global):
+                declared |= set(n.names)
+        params = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
+        shadow = (stores_in(fn) & top) - declared - params
+        if shadow:
+            bad.append('%s:%d %s() assigns %s without global'
+                       % (name, fn.lineno, fn.name, ', '.join(sorted(shadow))))
+report(not bad, 'no implicit globals', '\n'.join(bad))
+
+# --- 6. Roadmap structure --------------------------------------------------
 checker = os.path.join(ROOT, 'tools', 'check_roadmap.py')
 if os.path.exists(checker):
     r = subprocess.run([sys.executable, checker], capture_output=True, text=True)
@@ -130,7 +192,7 @@ if os.path.exists(checker):
 else:
     report(False, 'roadmap structure', 'tools/check_roadmap.py is missing')
 
-# --- 6. Test suites --------------------------------------------------------
+# --- 7. Test suites --------------------------------------------------------
 # Each runs as its own process: the suites install stub modules into
 # sys.modules and would contaminate each other in one interpreter.
 tests_dir = os.path.join(ROOT, 'tests')
