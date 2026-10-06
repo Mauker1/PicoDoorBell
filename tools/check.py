@@ -12,6 +12,10 @@ Seven things, in increasing order of how long they take:
   6. ROADMAP.md is structurally sound (tools/check_roadmap.py).
   7. Every suite in tests/ passes.
 
+Files covered: everything git does not ignore, tracked or not, so a new file
+is checked before it is ever added, and local notes stay out by being listed
+in .gitignore. Outside a git checkout, the whole tree.
+
 Exits non-zero if anything fails, so it works as a pre-commit hook or a CI
 step. Test output is captured and shown only for failures, since a passing
 run prints several hundred lines nobody reads.
@@ -39,12 +43,44 @@ def report(ok, label, detail=''):
             notes.append((label, detail))
 
 
+def project_files():
+    """Every file the checks cover, as sorted absolute paths.
+
+    The files git does not ignore: tracked, staged, and new files not yet
+    added (git ls-files --cached --others --exclude-standard). A new file is
+    therefore checked the moment it exists, while local-only files stay out
+    by being listed in .gitignore, which also keeps them from being committed
+    by accident. Contents are read from the working tree, so a modified file
+    is checked as it stands on disk. Outside a git checkout (an exported
+    tarball, say) this falls back to walking the whole tree.
+    """
+    try:
+        out = subprocess.run(
+            ['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+            cwd=ROOT, capture_output=True, check=True).stdout
+        paths = set(os.path.join(ROOT, p) for p in out.decode('utf-8').split('\0') if p)
+        # A tracked file deleted from disk is still listed until the deletion
+        # is staged; there is nothing left to check.
+        return sorted(p for p in paths if os.path.isfile(p))
+    except (OSError, subprocess.CalledProcessError):
+        notes.append(('file list', 'git unavailable here, so the whole tree was '
+                      'scanned, ignored files included'))
+        found = []
+        for base, dirs, names in os.walk(ROOT):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            found.extend(os.path.join(base, n) for n in names)
+        return sorted(found)
+
+
+FILES = project_files()
+
+
 def python_files():
-    for base, dirs, names in os.walk(ROOT):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-        for name in sorted(names):
-            if name.endswith('.py'):
-                yield os.path.join(base, name)
+    return [p for p in FILES if p.endswith('.py')]
+
+
+def markdown_files():
+    return [p for p in FILES if p.endswith('.md')]
 
 
 def relative(path):
@@ -70,18 +106,13 @@ report(not bad, 'trailing newlines', '\n'.join(bad))
 # headings depend on it structurally, and check_roadmap.py matches on it.
 DASHES = {'\u2014': 'em dash', '\u2013': 'en dash'}
 bad = []
-for base, dirs, names in os.walk(ROOT):
-    dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-    for name in sorted(names):
-        if not name.endswith(('.py', '.md')):
-            continue
-        path = os.path.join(base, name)
-        text = open(path, encoding='utf-8').read()
-        for i, line in enumerate(text.split('\n'), 1):
-            for ch, label in DASHES.items():
-                if ch in line:
-                    bad.append('%s:%d %s: %s'
-                               % (relative(path), i, label, line.strip()[:70]))
+for path in python_files() + markdown_files():
+    text = open(path, encoding='utf-8').read()
+    for i, line in enumerate(text.split('\n'), 1):
+        for ch, label in DASHES.items():
+            if ch in line:
+                bad.append('%s:%d %s: %s'
+                           % (relative(path), i, label, line.strip()[:70]))
 report(not bad, 'no em or en dashes', '\n'.join(bad[:20]))
 
 # --- 3. No spaced hyphen standing in for a dash ----------------------------
@@ -91,30 +122,25 @@ report(not bad, 'no em or en dashes', '\n'.join(bad[:20]))
 # dash in disguise. Markdown only; in Python a spaced hyphen is subtraction.
 DELIM = re.compile(r'^\|(\s*:?-+:?\s*\|)+$')
 bad = []
-for base, dirs, names in os.walk(ROOT):
-    dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-    for name in sorted(names):
-        if not name.endswith('.md'):
-            continue
-        path = os.path.join(base, name)
-        for i, line in enumerate(open(path, encoding='utf-8').read().split('\n'), 1):
-            if DELIM.match(line):
-                continue          # table rule
-            if line.startswith('|'):
-                # A cell holding only '-' means 'none'; it is not a dash.
-                hit = any(' - ' in c for c in line.split('|')
-                          if c.strip() != '-')
-            else:
-                # Drop blockquote markers and a leading list marker, then look
-                # for a spaced hyphen before anything a word can start with:
-                # letters, but also code, quotes and emphasis, which the first
-                # version of this check let through.
-                body = re.sub(r'^\s*(>\s*)*', '', line)
-                if body.startswith('- '):
-                    body = body[2:]
-                hit = bool(re.search(r'\S - [\w`"\'*(\[]', body))
-            if hit:
-                bad.append('%s:%d %s' % (relative(path), i, line.strip()[:70]))
+for path in markdown_files():
+    for i, line in enumerate(open(path, encoding='utf-8').read().split('\n'), 1):
+        if DELIM.match(line):
+            continue          # table rule
+        if line.startswith('|'):
+            # A cell holding only '-' means 'none'; it is not a dash.
+            hit = any(' - ' in c for c in line.split('|')
+                      if c.strip() != '-')
+        else:
+            # Drop blockquote markers and a leading list marker, then look
+            # for a spaced hyphen before anything a word can start with:
+            # letters, but also code, quotes and emphasis, which the first
+            # version of this check let through.
+            body = re.sub(r'^\s*(>\s*)*', '', line)
+            if body.startswith('- '):
+                body = body[2:]
+            hit = bool(re.search(r'\S - [\w`"\'*(\[]', body))
+        if hit:
+            bad.append('%s:%d %s' % (relative(path), i, line.strip()[:70]))
 report(not bad, 'no spaced hyphens in prose', '\n'.join(bad[:20]))
 
 # --- 4. Byte-compiles ------------------------------------------------------
@@ -175,10 +201,10 @@ def stores_in(fn):
     return found
 
 bad = []
-for name in sorted(os.listdir(ROOT)):
-    if not name.endswith('.py'):
-        continue
-    path = os.path.join(ROOT, name)
+for path in python_files():
+    name = relative(path)
+    if os.sep in name:
+        continue              # tests/, tools/, boards/: not firmware
     tree = ast.parse(open(path, encoding='utf-8').read())
     top = module_level_names(tree)
     for fn in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)):
@@ -212,8 +238,11 @@ else:
 # sys.modules and would contaminate each other in one interpreter.
 tests_dir = os.path.join(ROOT, 'tests')
 total = 0
-suites = sorted(n for n in os.listdir(tests_dir)
-                if n.startswith('test_') and n.endswith('.py'))
+# Same file list as everything else, so an ignored scratch test cannot fail
+# the gate, while a new suite runs the moment it exists.
+suites = sorted(os.path.basename(p) for p in python_files()
+                if os.path.dirname(p) == tests_dir
+                and os.path.basename(p).startswith('test_'))
 for name in suites:
     path = os.path.join(tests_dir, name)
     r = subprocess.run([sys.executable, path], capture_output=True, text=True,

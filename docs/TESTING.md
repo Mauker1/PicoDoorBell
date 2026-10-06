@@ -9,8 +9,14 @@ Host-side tests cover logic; these cover the things only hardware can answer.
 python3 tools/check.py
 ```
 
-Trailing newlines, byte-compilation, roadmap structure, and every suite in `tests/`. Exits
-non-zero on any failure, so it works as a pre-commit hook.
+Trailing newlines, no em or en dashes and no spaced hyphens standing in for them,
+byte-compilation, `global` declarations that match what each firmware function rebinds,
+roadmap structure, and every suite in `tests/`. Exits non-zero on any failure, so it works as
+a pre-commit hook.
+
+It covers every file git does not ignore, tracked or not: a new file is checked before you
+ever `git add` it. Local-only files (such as the session handover notes) stay out by being
+listed in `.gitignore`, which also keeps them from being committed by accident.
 
 A syntax error caught here is a minute. The same error on a board is a device that will not
 start, found by walking to the entryway.

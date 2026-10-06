@@ -144,3 +144,4 @@ state.json.tmp
 # time, not project documentation. Kept local so it cannot drift from the
 # committed docs or accidentally carry device details into the repo.
 handover.md
+handoff.md
