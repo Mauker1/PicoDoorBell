@@ -75,9 +75,9 @@ def fresh(offset=0):
 m = fresh()
 check('clock is not live before any sync', m.clockmod.clock_is_live(), False)
 check('clock_now is None before any sync', m.clockmod.clock_now(), None)
-check('current_epoch is None before any sync', m.current_epoch(), None)
+check('current_epoch is None before any sync', m.ringqueue.current_epoch(), None)
 check('a ring before sync records no epoch',
-      (lambda: (m.enqueue_ring(500), m.queue[0][m.Q_EPOCH])[1])(),
+      (lambda: (m.ringqueue.enqueue_ring(500), m.ringqueue.queue[0][m.ringqueue.Q_EPOCH])[1])(),
       None)
 
 # log_prefix marks a relative stamp so it can never pass for an absolute one.
@@ -203,9 +203,9 @@ WLAN.connected = True
 clock[0] = 5000
 m.timesync.sync_clock()
 # A ring arriving now, with the clock live, carries its wall-clock time.
-m.enqueue_ring(500)
-entry = m.queue[0]
-check('a live-clock ring records a real epoch', entry[m.Q_EPOCH], WALL_MP)
+m.ringqueue.enqueue_ring(500)
+entry = m.ringqueue.queue[0]
+check('a live-clock ring records a real epoch', entry[m.ringqueue.Q_EPOCH], WALL_MP)
 check('describe_delay shows the ring time',
       m.describe_delay(entry), ' (2024-06-01 12:00:00 +0000)')
 

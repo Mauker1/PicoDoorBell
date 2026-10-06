@@ -713,7 +713,8 @@ them.
 | `resets.py` | Scratch registers, `read_reset_info`, verdicts | - |
 | `net.py` | WiFi connect/bounce, `do_request`, backoff | config, applog, wdt, led, resets |
 | `timesync.py` | C1 NTP sync: `sync_clock`, `maybe_resync_clock`, `lastNtpSync` | config, applog, wdt, net, persist, clockmod |
-| `telegram.py` | `send_message`, `read_message`, commands (including `print_log`), ring queue | net, applog, persist, clockmod, led |
+| `ringqueue.py` | B6 queue storage: entries, `enqueue_ring`, snapshot and restore, `current_epoch` | config, applog, persist, clockmod, net |
+| `telegram.py` | `send_message`, `read_message`, commands (including `print_log`), queue delivery (`flush_queue`, `describe_delay`) | net, applog, clockmod, led, ringqueue |
 | `doorbell.py` | Input records, IRQ handlers, pulse judging | config, applog |
 | `main.py` | `boot()`, the loop, wiring | everything |
 
@@ -779,6 +780,11 @@ without depending on Telegram), and a narrower `telegram.py` (transport, command
 `clock_status()` stays in `main` as heartbeat formatting, reading `timesync.lastNtpSync`,
 and `current_epoch()` goes to `ringqueue.py`, so the queue depends on the leaf `clockmod`
 rather than on `timesync`.
+
+`ringqueue.py` is the queue itself: entries, the drop-oldest bound, and the snapshot and restore
+through `persist`. It never sends. It reads `net.networkFailures` only to snapshot at once a
+ring that arrives while the network is already failing. Delivery stays with Telegram, which
+pops an entry once Telegram confirms it.
 
 **Functions, not classes: decided.** MicroPython charges for every class and instance, and
 there is exactly one of each thing here: one input list, one queue, one log. Classes would

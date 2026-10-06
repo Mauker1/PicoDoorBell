@@ -62,7 +62,7 @@ def reboot():
     m = stubs.load_firmware()
     m.persist.load()
     m.setup_hardware()
-    m.restore_queue()
+    m.ringqueue.restore_queue()
     m.send_message = recorder(m)
     return m
 
@@ -83,27 +83,27 @@ os.chdir(tempfile.mkdtemp())
 # --- 1. A ring while the network is down is not lost -----------------------
 m = fresh()
 WLAN.connected = False
-m.enqueue_ring(2000)
+m.ringqueue.enqueue_ring(2000)
 m.flush_queue()
 check('nothing delivered while offline', len(sent), 0)
-check('the ring is waiting, not gone', len(m.queue), 1)
+check('the ring is waiting, not gone', len(m.ringqueue.queue), 1)
 
 WLAN.connected = True
 m.flush_queue()
 check('delivered once the network returns', len(sent), 1)
-check('queue emptied', len(m.queue), 0)
+check('queue emptied', len(m.ringqueue.queue), 0)
 
 # --- 2. A late delivery says so --------------------------------------------
 m = fresh()
 WLAN.connected = False
-m.enqueue_ring(2000)
+m.ringqueue.enqueue_ring(2000)
 clock[0] += 90000                        # 90 s outage
 WLAN.connected = True
 m.flush_queue()
 check('a delayed ring is marked as such', 'delayed 90s' in sent[0], True)
 
 m = fresh()
-m.enqueue_ring(2000)
+m.ringqueue.enqueue_ring(2000)
 m.flush_queue()
 check('a prompt ring is not marked', 'delayed' in sent[0], False)
 
@@ -111,7 +111,7 @@ check('a prompt ring is not marked', 'delayed' in sent[0], False)
 m = fresh()
 WLAN.connected = False
 for width in (1000, 2000, 3000):
-    m.enqueue_ring(width)
+    m.ringqueue.enqueue_ring(width)
     clock[0] += 1000
 WLAN.connected = True
 m.flush_queue()
@@ -121,44 +121,44 @@ check('all three delivered', len(sent), 3)
 m = fresh()
 WLAN.connected = False
 for _ in range(m.config.QUEUE_MAX + 5):
-    m.enqueue_ring(2000)
+    m.ringqueue.enqueue_ring(2000)
     clock[0] += 100
-check('queue stops at its limit', len(m.queue), m.config.QUEUE_MAX)
-check('overflow counted', m.queueDropped, 5)
+check('queue stops at its limit', len(m.ringqueue.queue), m.config.QUEUE_MAX)
+check('overflow counted', m.ringqueue.queueDropped, 5)
 
 # --- 5. A permanent failure does not block the queue -----------------------
 m = fresh()
-m.enqueue_ring(2000)
-m.enqueue_ring(2000)
+m.ringqueue.enqueue_ring(2000)
+m.ringqueue.enqueue_ring(2000)
 m.send_message = recorder(m, outcome=m.net.REQUEST_FATAL)
 m.flush_queue()
 check('undeliverable rings are dropped, not retried forever',
-      len(m.queue), 0)
+      len(m.ringqueue.queue), 0)
 
 # A retryable failure keeps them.
 m = fresh()
-m.enqueue_ring(2000)
+m.ringqueue.enqueue_ring(2000)
 m.send_message = recorder(m, outcome=m.net.REQUEST_RETRY)
 m.flush_queue()
-check('a retryable failure keeps the ring', len(m.queue), 1)
+check('a retryable failure keeps the ring', len(m.ringqueue.queue), 1)
 
 # --- 6. Flash: only after an outage has run long ---------------------------
 m = fresh()
 WLAN.connected = False
-m.enqueue_ring(2000)
-m.maybe_snapshot_queue()
+m.ringqueue.enqueue_ring(2000)
+m.ringqueue.maybe_snapshot_queue()
 check('a brief outage writes nothing', bool(
     json.load(open('state.json'))['queue']) if os.path.exists('state.json') else False,
       False)
 
 clock[0] += m.config.QUEUE_SNAPSHOT_AFTER_MS + 1000
-m.maybe_snapshot_queue()
+m.ringqueue.maybe_snapshot_queue()
 stored = json.load(open('state.json'))['queue']
 check('a long outage is persisted', len(stored), 1)
 
 writes_before = json.load(open('state.json'))['writes']
-m.maybe_snapshot_queue()
-m.maybe_snapshot_queue()
+m.ringqueue.maybe_snapshot_queue()
+m.ringqueue.maybe_snapshot_queue()
 check('repeated calls do not rewrite',
       json.load(open('state.json'))['writes'], writes_before)
 
@@ -166,7 +166,7 @@ check('repeated calls do not rewrite',
 WLAN.connected = True
 m.flush_queue()
 clock[0] += m.config.QUEUE_SNAPSHOT_MIN_MS + 1000
-m.maybe_snapshot_queue()
+m.ringqueue.maybe_snapshot_queue()
 check('the flash copy is cleared after delivery',
       json.load(open('state.json'))['queue'], [])
 
@@ -175,14 +175,14 @@ check('the flash copy is cleared after delivery',
 # five-minute snapshot has not fired yet and RAM does not survive.
 m = fresh()
 m.net.networkFailures = 3          # the network is already misbehaving
-m.enqueue_ring(2000)
+m.ringqueue.enqueue_ring(2000)
 stored = json.load(open('state.json'))['queue']
 check('a ring queued during trouble is written immediately', len(stored), 1)
 
 # When the network is healthy there is no such urgency, and no write.
 m = fresh()
 m.net.networkFailures = 0
-m.enqueue_ring(2000)
+m.ringqueue.enqueue_ring(2000)
 exists = os.path.exists('state.json')
 stored = json.load(open('state.json'))['queue'] if exists else []
 check('a ring queued on a healthy network writes nothing', stored, [])
@@ -202,9 +202,9 @@ check('then cleared', m.pendingAnnouncement, None)
 # --- 7. The ring survives a reset ------------------------------------------
 m = fresh()
 WLAN.connected = False
-m.enqueue_ring(2345)
+m.ringqueue.enqueue_ring(2345)
 clock[0] += m.config.QUEUE_SNAPSHOT_AFTER_MS + 1000
-m.maybe_snapshot_queue()
+m.ringqueue.maybe_snapshot_queue()
 check('persisted before the reset', len(json.load(open('state.json'))['queue']), 1)
 
 # Reboot: same flash, fresh RAM.
@@ -213,8 +213,8 @@ mem32.cells.clear()
 clock[0] = 500
 del sent[:]
 m2 = reboot()
-check('the ring came back', len(m2.queue), 1)
-check('marked as restored', m2.queue[0][m2.Q_RESTORED], True)
+check('the ring came back', len(m2.ringqueue.queue), 1)
+check('marked as restored', m2.ringqueue.queue[0][m2.ringqueue.Q_RESTORED], True)
 
 m2.flush_queue()
 check('and is delivered after the reset', len(sent), 1)
@@ -229,7 +229,7 @@ WLAN.connected = True
 mem32.cells.clear()
 m3 = reboot()
 check('boot survives a malformed queue', m3.doorBellInput is not None, True)
-check('unreadable entries are skipped', len(m3.queue), 0)
+check('unreadable entries are skipped', len(m3.ringqueue.queue), 0)
 
 print()
 print('%d/%d passed' % (sum(results), len(results)))

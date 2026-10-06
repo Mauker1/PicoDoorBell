@@ -173,7 +173,7 @@ def ticking_sleep(seconds):
 
 # net cannot import the layers above it; main wires the hooks at import.
 check('net hooks are wired at import',
-      (m.net.on_give_up is m.self_reset, m.net.on_wait is m.maybe_snapshot_queue),
+      (m.net.on_give_up is m.self_reset, m.net.on_wait is m.ringqueue.maybe_snapshot_queue),
       (True, True))
 
 m.wdt.sleep_fed = ticking_sleep
@@ -182,7 +182,7 @@ m.wdt.sleep_fed = ticking_sleep
 waits = []
 m.net.on_wait = lambda: waits.append(1)
 m.net.connect_wifi()
-m.net.on_wait = m.maybe_snapshot_queue
+m.net.on_wait = m.ringqueue.maybe_snapshot_queue
 issued = events.count('wlan_connect')
 check('one connect per attempt, not per poll', issued, 3)
 check('it did connect in the end', WLAN.connected, True)

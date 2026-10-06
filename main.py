@@ -35,6 +35,7 @@ import persist
 import resets
 import net
 import timesync
+import ringqueue
 from secrets import secrets
 
 ####################################################################################
@@ -211,24 +212,9 @@ IN_FIELDS = 11
 ####################################################################################
 # B6 undelivered-ring queue.
 #
-# A ring detected during a network outage used to be logged and then lost.
-# Rings now wait in RAM until they can be sent.
-#
-# RAM first: the queue exists to survive a *network* outage, which RAM covers
-# completely. Flash only helps across a reset, so it is written only when an
-# outage has already run long -- a Tier 3 write, event-driven and rare.
+# Storage and persistence live in ringqueue.py. Delivery (flush_queue,
+# describe_delay) stays with the Telegram code below.
 ####################################################################################
-
-# Queue sizing and snapshot timings now live in config.py.
-
-Q_TICKS = 0      # ticks_ms when it was latched; meaningless across a reset
-Q_WIDTH = 1      # pulse width, for the log
-Q_EPOCH = 2      # wall-clock seconds, or None until C1 lands
-Q_RESTORED = 3   # came back from flash, so its age is unknowable
-
-queue = []
-queueDropped = 0
-lastSnapshotTicks = 0
 
 inputs = []
 # Start of the current main-loop pass, and of the one before it. Used to work
@@ -395,7 +381,7 @@ def self_reset(reason, code=0):
     """
     applog.report('Resetting: ' + reason)
     try:
-        snapshot_queue()          # do not lose undelivered rings
+        ringqueue.snapshot_queue()          # do not lose undelivered rings
     except Exception:
         pass
     resets.mark_intended_reset(code)
@@ -551,7 +537,7 @@ def process_input(entry):
     applog.report(entry[IN_NAME] + ' ring, ' + str(width) + 'ms')
     # Queued rather than sent. Delivery is the queue's job, and a ring is
     # not discarded until Telegram confirms it.
-    enqueue_ring(width)
+    ringqueue.enqueue_ring(width)
 
 def clock_status():
     """One-line clock state for the heartbeat.
@@ -567,30 +553,6 @@ def clock_status():
     return clockmod.format_timestamp(clockmod.clock_now(), utcOffset) + \
         ' (synced ' + format_uptime(since) + ' ago)'
 
-def current_epoch():
-    """Wall-clock epoch for a ring arriving now, or None if unsynced.
-
-    A queued ring records the real time it arrived when the clock is live,
-    and None when it is not: a ring caught before the first sync still has
-    no knowable absolute time, and one restored from flash cannot be aged.
-    """
-    return clockmod.clock_now()
-
-def enqueue_ring(width):
-    global queueDropped
-    if len(queue) >= config.QUEUE_MAX:
-        # Drop the oldest: a visitor from an hour ago matters less than the
-        # one at the door now.
-        queue.pop(0)
-        queueDropped += 1
-        applog.append_to_log('Queue full, dropped the oldest ring')
-    queue.append([time.ticks_ms(), width, current_epoch(), False])
-    if net.networkFailures:
-        # The network is already failing, so this ring may sit here a while
-        # -- and a watchdog bite during a slow DNS lookup would take it with
-        # it. One write, only for rings that arrive during trouble.
-        snapshot_queue()
-
 def describe_delay(entry):
     """Trailing note on a delivered ring: when it rang, or how late it is.
 
@@ -600,8 +562,8 @@ def describe_delay(entry):
     tagged approximate. Without any epoch the old relative wording stands:
     a restart note, or a delay in seconds once past the notice threshold.
     """
-    epoch = entry[Q_EPOCH]
-    if entry[Q_RESTORED]:
+    epoch = entry[ringqueue.Q_EPOCH]
+    if entry[ringqueue.Q_RESTORED]:
         if epoch is not None:
             return ' (rang around ' + \
                    clockmod.format_timestamp(epoch, utcOffset) + \
@@ -609,7 +571,7 @@ def describe_delay(entry):
         return ' (queued before a restart)'
     if epoch is not None:
         return ' (' + clockmod.format_timestamp(epoch, utcOffset) + ')'
-    age = time.ticks_diff(time.ticks_ms(), entry[Q_TICKS])
+    age = time.ticks_diff(time.ticks_ms(), entry[ringqueue.Q_TICKS])
     if age < config.DELAY_NOTICE_MS:
         return ''
     return ' (delayed ' + str(age // 1000) + 's)'
@@ -622,16 +584,16 @@ def flush_queue():
     on the bench as a logged ring that never arrived.
     """
     sentCount = 0
-    while queue and sentCount < config.QUEUE_FLUSH_PER_PASS:
-        entry = queue[0]
+    while ringqueue.queue and sentCount < config.QUEUE_FLUSH_PER_PASS:
+        entry = ringqueue.queue[0]
         outcome, status, body = send_message(chatId, config.text + describe_delay(entry))
         if outcome == net.REQUEST_OK:
-            queue.pop(0)
+            ringqueue.queue.pop(0)
             sentCount += 1
         elif outcome == net.REQUEST_FATAL:
             # Retrying will not help. Drop it rather than block the queue
             # behind something permanently undeliverable.
-            queue.pop(0)
+            ringqueue.queue.pop(0)
             applog.report('Dropped an undeliverable ring: ' +
                    describe_api_error(status, body))
         else:
@@ -643,46 +605,6 @@ def flush_queue():
         # feedback, and blinking N times would just be noise.
         led.led_alert()
     return sentCount
-
-def snapshot_queue():
-    """Persist the queue. Writes only if the contents actually changed."""
-    global lastSnapshotTicks
-    lastSnapshotTicks = time.ticks_ms()
-    persist.state_set('queue', [[e[Q_EPOCH], e[Q_WIDTH]] for e in queue])
-
-def maybe_snapshot_queue():
-    """Persist a queue that has been waiting long enough to be at risk.
-
-    Not on a timer. A short outage never writes at all, because RAM already
-    covers it. Only an outage that has already run for minutes -- long
-    enough that a reset in the middle is a real possibility -- earns a
-    flash write.
-    """
-    now = time.ticks_ms()
-    if not queue:
-        if persist.state_get('queue', []):
-            snapshot_queue()      # delivered; clear the copy on flash
-        return
-    if time.ticks_diff(now, queue[0][Q_TICKS]) < config.QUEUE_SNAPSHOT_AFTER_MS:
-        return
-    if time.ticks_diff(now, lastSnapshotTicks) < config.QUEUE_SNAPSHOT_MIN_MS:
-        return
-    snapshot_queue()
-
-def restore_queue():
-    """Reload rings that outlived a reset."""
-    stored = persist.state_get('queue', [])
-    if not stored:
-        return
-    now = time.ticks_ms()
-    for item in stored:
-        try:
-            epoch = item[0]
-            width = item[1]
-        except (IndexError, TypeError):
-            continue
-        queue.append([now, width, epoch, True])
-    applog.report('Recovered ' + str(len(queue)) + ' undelivered ring(s)')
 
 def poll_inputs():
     for entry in inputs:
@@ -752,8 +674,8 @@ def input_summary():
                      ' rings, ' + str(entry[IN_REJECTED]) +
                      ' transients, ' + str(entry[IN_MISSED]) +
                      ' unpollable')
-    parts.append('queue: ' + str(len(queue)) + ' waiting, ' +
-                 str(queueDropped) + ' dropped')
+    parts.append('queue: ' + str(len(ringqueue.queue)) + ' waiting, ' +
+                 str(ringqueue.queueDropped) + ' dropped')
     return '; '.join(parts)
 
 def setup_hardware():
@@ -843,7 +765,7 @@ def mark_boot_stable():
 net.ssid = secrets['ssid']
 net.pw = secrets['pw']
 net.on_give_up = self_reset
-net.on_wait = maybe_snapshot_queue
+net.on_wait = ringqueue.maybe_snapshot_queue
 
 def boot():
     """Bring the device up, hardware first.
@@ -873,7 +795,7 @@ def boot():
     # The running total lives in flash, so it is only knowable once state
     # has loaded -- which is why the summary is logged here rather than at
     # the top of boot(). Nothing is written yet; see mark_boot_stable().
-    restore_queue()
+    ringqueue.restore_queue()
 
     bootNumber = persist.state_get('boots', 0) + 1
     resetInfo['bootNumber'] = bootNumber
@@ -927,7 +849,7 @@ if __name__ == '__main__':
             poll_inputs()
             flush_announcement()
             flush_queue()
-            maybe_snapshot_queue()
+            ringqueue.maybe_snapshot_queue()
 
             # Check for new messages
             if (time.ticks_diff(time.ticks_ms(), lastLogCheck) > config.logCheckInterval):

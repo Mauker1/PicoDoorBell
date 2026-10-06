@@ -152,7 +152,7 @@ m = fresh()
 sent = []
 m.send_message = lambda chat, msg: (sent.append(msg), (m.net.REQUEST_OK, 200, {}))[1]
 m.led.set_led_state(m.led.LED_CONNECTED)
-m.enqueue_ring(2000)
+m.ringqueue.enqueue_ring(2000)
 m.led.led.levels.clear()
 m.flush_queue()
 check('a delivered ring was sent', len(sent), 1)

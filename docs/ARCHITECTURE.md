@@ -924,7 +924,7 @@ All of this lives in `net.py` (E2): the radio, the link, `do_request` and its
 backoff, and wedged-stack detection. Two things it must trigger live above it,
 so `main` injects them as hooks at import: `net.on_give_up`, which is
 `self_reset()` (it snapshots the ring queue before resetting), and
-`net.on_wait`, which is `maybe_snapshot_queue()`, run on every pass while a
+`net.on_wait`, which is `ringqueue.maybe_snapshot_queue()`, run on every pass while a
 connect blocks. Both start as `None`, so an unwired hook fails loudly instead
 of silently skipping a reset or a snapshot.
 
@@ -1290,7 +1290,7 @@ details are read.
 | File | Purpose |
 | --- | --- |
 | `main.py` | Firmware: boot, the main loop, and the wiring between modules |
-| `config.py`, `wdt.py`, `clockmod.py`, `led.py`, `applog.py`, `persist.py`, `resets.py`, `net.py`, `timesync.py` | Firmware modules split out of `main.py` (E2). All must be on the device; a missing one is an ImportError at boot. |
+| `config.py`, `wdt.py`, `clockmod.py`, `led.py`, `applog.py`, `persist.py`, `resets.py`, `net.py`, `timesync.py`, `ringqueue.py` | Firmware modules split out of `main.py` (E2). All must be on the device; a missing one is an ImportError at boot. |
 | `board.py` | Pin assignments for this board. Copied from `boards/` at install time. |
 | `secrets.py` | Credentials and chat configuration. User-edited, never written by the firmware. |
 | `state.json` | Tier 2 runtime state. Firmware-written, never user-edited. |
