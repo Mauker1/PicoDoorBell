@@ -26,13 +26,6 @@ import ubinascii
 import machine
 import time
 import gc
-# C1: NTP wall clock. ntptime ships with the rp2 port but not with host-side
-# CPython, and a build could in principle lack it. Absence is not fatal: the
-# clock simply never syncs and every timestamp stays marked as relative.
-try:
-    import ntptime
-except ImportError:
-    ntptime = None
 import config
 import wdt
 import clockmod
@@ -41,6 +34,7 @@ import applog
 import persist
 import resets
 import net
+import timesync
 from secrets import secrets
 
 ####################################################################################
@@ -94,6 +88,7 @@ wifiPowerSave = getattr(board, 'wifiPowerSave', False)
 # such choice stays visible rather than silent.
 utcOffset = getattr(board, 'utcOffset', 0)
 applog.utcOffset = utcOffset
+timesync.utcOffset = utcOffset
 
 # Configured by setup_hardware() during boot, not at import time, so that
 # failures are catchable and the ordering is explicit. The LED pin lives in
@@ -167,10 +162,8 @@ lastLogCheck = startupTime
 
 # NTP timing and the epoch sanity floor now live in config.py.
 
-# The wall-clock anchor and its pure reads now live in clockmod.py. The sync
-# side stays here (it needs ntptime, net, persist, report). lastNtpSync is the
-# resync timer, owned by the sync side.
-lastNtpSync = 0
+# The wall-clock anchor and its pure reads live in clockmod.py; the NTP sync
+# side (sync_clock, maybe_resync_clock, lastNtpSync) lives in timesync.py.
 
 ####################################################################################
 # B2 watchdog.
@@ -560,69 +553,6 @@ def process_input(entry):
     # not discarded until Telegram confirms it.
     enqueue_ring(width)
 
-def sync_clock():
-    """Sync the wall clock from NTP. Best effort, never fatal, never raises.
-
-    Returns True on a good sync. A failure leaves any existing anchor in
-    place: a stale clock beats no clock, and the entries stay tagged with
-    their age since last sync through the heartbeat rather than silently
-    presenting drift as truth.
-
-    Sets the RAM anchor through clockmod, then writes the coarse flash copy
-    (epochAnchor) here, since persistence is this side's concern, not the
-    pure clock module's.
-    """
-    global lastNtpSync
-    if ntptime is None:
-        return False
-    if not net.is_wifi_connected():
-        return False
-    # Bracket the blocking UDP call with feeds; set the module timeout low so
-    # a dead NTP server cannot approach the watchdog ceiling.
-    wdt.feed_watchdog()
-    try:
-        ntptime.timeout = config.NTP_TIMEOUT_S
-    except Exception:
-        # Older ntptime without a configurable timeout. The watchdog remains
-        # the backstop, exactly as for urequests.
-        pass
-    try:
-        epoch = ntptime.time()
-    except Exception as e:
-        applog.append_to_log('NTP sync failed: ' + str(e))
-        wdt.feed_watchdog()
-        return False
-    wdt.feed_watchdog()
-    if epoch < config.EPOCH_SANITY_FLOOR_MP:
-        # A stalled read can return 0 or a tiny value. Anchoring to that
-        # would date every ring to the epoch, which is worse than no clock.
-        applog.append_to_log('NTP returned an implausible epoch; ignoring it')
-        return False
-    lastNtpSync = time.ticks_ms()
-    clockmod.set_anchor(epoch)
-    # Coarse flash fallback for aging rings recovered after a reset. Written
-    # here, not in clockmod, which stays a pure leaf.
-    persist.state_set('epochAnchor', epoch)
-    applog.report('Clock synced: ' +
-           clockmod.format_timestamp(clockmod.clock_now(), utcOffset))
-    return True
-
-def maybe_resync_clock():
-    """Resync on the timer, or take a first sync as soon as one is possible.
-
-    Timer-gated like the heartbeat. Each successful resync refreshes the
-    coarse epochAnchor copy through set_clock_anchor(), so it costs one flash
-    write per NTP_RESYNC_MS of uptime: the one deliberate exception to the
-    Tier 2 rule, see the persistence section.
-    An unsynced clock retries every pass it can, which is cheap: the guards
-    in sync_clock() return before any network work when WiFi is down.
-    """
-    if not clockmod.clockEverSynced:
-        return sync_clock()
-    if time.ticks_diff(time.ticks_ms(), lastNtpSync) < config.NTP_RESYNC_MS:
-        return False
-    return sync_clock()
-
 def clock_status():
     """One-line clock state for the heartbeat.
 
@@ -633,7 +563,7 @@ def clock_status():
     """
     if not clockmod.clock_is_live():
         return 'unsynced (using relative time)'
-    since = time.ticks_diff(time.ticks_ms(), lastNtpSync)
+    since = time.ticks_diff(time.ticks_ms(), timesync.lastNtpSync)
     return clockmod.format_timestamp(clockmod.clock_now(), utcOffset) + \
         ' (synced ' + format_uptime(since) + ' ago)'
 
@@ -966,7 +896,7 @@ def boot():
         # carry a real timestamp rather than a relative one. Best effort: a
         # failed sync just leaves the clock unsynced, and the main loop
         # retries. Never fatal.
-        sync_clock()
+        timesync.sync_clock()
         # Before announcing: otherwise a reset replays every command
         # Telegram has been holding, including ones from yesterday.
         discard_update_backlog()
@@ -1016,7 +946,7 @@ if __name__ == '__main__':
             prevPassTicks = lastPassTicks
             lastPassTicks = time.ticks_ms()
             uptimeMs += time.ticks_diff(lastPassTicks, prevPassTicks)
-            maybe_resync_clock()
+            timesync.maybe_resync_clock()
             maybe_heartbeat()
 
             wdt.sleep_fed(config.loopDelay)

@@ -92,7 +92,7 @@ check('log prefix is marked relative before sync',
 m = fresh()
 WLAN.connected = True
 clock[0] = 5000
-check('sync_clock reports success', m.sync_clock(), True)
+check('sync_clock reports success', m.timesync.sync_clock(), True)
 check('clock is live after sync', m.clockmod.clock_is_live(), True)
 check('clock_now returns the synced epoch', m.clockmod.clock_now(), WALL_MP)
 check('epoch persisted to flash for restored-ring aging',
@@ -126,6 +126,13 @@ m = fresh(offset=7200)
 m.clockmod.set_anchor(WALL_MP)
 check('log_prefix applies the board offset after sync',
       m.applog.log_prefix().startswith('2024-06-01 14:'), True)
+# The same offset reaches timesync's own report, which main wires separately.
+WLAN.connected = True
+Ntptime.raise_exc = False
+Ntptime.next_epoch = WALL_MP
+m.timesync.sync_clock()
+check('the sync report applies the board offset',
+      any('Clock synced: 2024-06-01 14:' in line for line in m.applog.logLines), True)
 
 ####################################################################################
 # Bad input never poisons the clock.
@@ -134,25 +141,25 @@ check('log_prefix applies the board offset after sync',
 m = fresh()
 WLAN.connected = True
 Ntptime.next_epoch = 0           # a stalled read: below the sanity floor
-check('an implausible epoch is rejected', m.sync_clock(), False)
+check('an implausible epoch is rejected', m.timesync.sync_clock(), False)
 check('a rejected sync leaves the clock unsynced', m.clockmod.clock_is_live(), False)
 
 m = fresh()
 WLAN.connected = True
 clock[0] = 5000
 Ntptime.next_epoch = WALL_MP
-m.sync_clock()                   # establish a good anchor first
+m.timesync.sync_clock()                   # establish a good anchor first
 Ntptime.next_epoch = 0           # then a bad read on the next attempt
 check('good anchor stands before the bad read',
       m.clockmod.clock_now(), WALL_MP)
-check('a later bad read is rejected', m.sync_clock(), False)
+check('a later bad read is rejected', m.timesync.sync_clock(), False)
 check('the earlier good anchor survives a bad read',
       m.clockmod.clock_is_live(), True)
 
 m = fresh()
 WLAN.connected = True
 Ntptime.raise_exc = True
-check('an NTP exception is caught, not raised', m.sync_clock(), False)
+check('an NTP exception is caught, not raised', m.timesync.sync_clock(), False)
 check('a raised sync leaves the clock unsynced', m.clockmod.clock_is_live(), False)
 
 ####################################################################################
@@ -161,7 +168,7 @@ check('a raised sync leaves the clock unsynced', m.clockmod.clock_is_live(), Fal
 
 m = fresh()
 WLAN.connected = False
-check('sync is skipped when WiFi is down', m.sync_clock(), False)
+check('sync is skipped when WiFi is down', m.timesync.sync_clock(), False)
 check('a skipped sync makes no NTP call', Ntptime.calls, 0)
 WLAN.connected = True
 
@@ -171,18 +178,21 @@ WLAN.connected = True
 
 m = fresh()
 WLAN.connected = True
-clock[0] = 1000
+# Start well past NTP_RESYNC_MS so the interval check measures from the sync
+# itself: from a clock near zero, a lastNtpSync that never updated would still
+# look recent and the guard would pass by accident.
+clock[0] = 3 * m.config.NTP_RESYNC_MS
 check('maybe_resync takes the first sync as soon as it can',
-      m.maybe_resync_clock(), True)
+      m.timesync.maybe_resync_clock(), True)
 before = Ntptime.calls
 clock[0] += 1000                  # far short of NTP_RESYNC_MS
 check('maybe_resync does nothing before the interval',
-      m.maybe_resync_clock(), False)
+      m.timesync.maybe_resync_clock(), False)
 check('no NTP call was made inside the interval',
       Ntptime.calls, before)
 clock[0] += m.config.NTP_RESYNC_MS + 1000
 check('maybe_resync resyncs once the interval passes',
-      m.maybe_resync_clock(), True)
+      m.timesync.maybe_resync_clock(), True)
 
 ####################################################################################
 # Timestamps reach the delivered ring.
@@ -191,7 +201,7 @@ check('maybe_resync resyncs once the interval passes',
 m = fresh()
 WLAN.connected = True
 clock[0] = 5000
-m.sync_clock()
+m.timesync.sync_clock()
 # A ring arriving now, with the clock live, carries its wall-clock time.
 m.enqueue_ring(500)
 entry = m.queue[0]
@@ -219,7 +229,7 @@ check('heartbeat says unsynced before a sync',
       'unsynced' in m.clock_status(), True)
 WLAN.connected = True
 clock[0] = 5000
-m.sync_clock()
+m.timesync.sync_clock()
 check('heartbeat shows the time and a sync age after a sync',
       '2024' in m.clock_status() and 'synced' in m.clock_status(),
       True)

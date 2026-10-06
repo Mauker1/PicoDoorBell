@@ -282,6 +282,27 @@ Inconclusive: no "urequests has no timeout support" line appeared. Either the bu
 the parameter, or the pre-flight check caught every case before the timeout path was reached.
 The guard that fired is the one that mattered.
 
+### A10: Rings pressed during a blocking reconnect are lost (P0)
+Found on the bench (E2 test plan, test 5), and present in the pre-E2 build too. The IRQ
+latches a pulse during a blocking `connect_wifi()`, but only `poll_inputs()` turns the latch
+into a queued ring, and it runs only from the main loop, which is stalled for the whole
+connect. So a ring pressed after the reconnect starts lives only in the latch:
+
+- If the outage ends in a give-up reset, the latch dies with it. The ring never reached the
+  queue, so the snapshot had nothing to save. Observed: rings before the outage was noticed
+  were delivered; rings during the reconnect were not.
+- The latch holds one pulse per input, so several presses collapse into the last one.
+- If the outage recovers without a reset, the latched ring is queued after reconnect and
+  timestamped then, so its delay message understates how long ago it rang.
+
+**Fix (after E2):** wire `net.on_wait` to a small function in `main` that calls
+`poll_inputs()` and then `maybe_snapshot_queue()`. Each blocked pass (about once a second)
+then queues real rings with an accurate time, and a queued ring survives a give-up reset
+because `self_reset()` snapshots the queue. Safe there: `poll_inputs()` judges and queues but
+never sends, so nothing re-enters `net` mid-connect. Behavior change, so its own commit, with
+tests (a ring during a blocked connect is queued before it returns, and survives the reset),
+then bench test 5 again before promotion.
+
 ---
 
 ## B. Reliability
@@ -691,7 +712,8 @@ them.
 | `persist.py` | `state.json`, the tier rules, atomic write | applog |
 | `resets.py` | Scratch registers, `read_reset_info`, verdicts | - |
 | `net.py` | WiFi connect/bounce, `do_request`, backoff | config, applog, wdt, led, resets |
-| `telegram.py` | `send_message`, `read_message`, commands (including `print_log`), ring queue, `sync_clock` | net, applog, persist, clockmod, led |
+| `timesync.py` | C1 NTP sync: `sync_clock`, `maybe_resync_clock`, `lastNtpSync` | config, applog, wdt, net, persist, clockmod |
+| `telegram.py` | `send_message`, `read_message`, commands (including `print_log`), ring queue | net, applog, persist, clockmod, led |
 | `doorbell.py` | Input records, IRQ handlers, pulse judging | config, applog |
 | `main.py` | `boot()`, the loop, wiring | everything |
 
@@ -748,6 +770,15 @@ JSON, not HTTP, so they wait for `telegram.py`; `retry_after()` currently has no
 
 > **Noted for later:** `rp2.country('DE')` is hardcoded in `net.py`. An open project used
 > outside Germany needs it configurable, in `board.py` or `config.py`.
+
+Step 9 splits the original `telegram.py` row three ways, because the row bundled three
+unrelated things and following it literally would create upward dependencies: `timesync.py`
+(NTP, not Telegram), `ringqueue.py` (queue storage, which the future `doorbell.py` must reach
+without depending on Telegram), and a narrower `telegram.py` (transport, commands, delivery).
+`timesync.py` holds the sync side of C1; `clockmod.py` keeps the anchor and pure time math.
+`clock_status()` stays in `main` as heartbeat formatting, reading `timesync.lastNtpSync`,
+and `current_epoch()` goes to `ringqueue.py`, so the queue depends on the leaf `clockmod`
+rather than on `timesync`.
 
 **Functions, not classes: decided.** MicroPython charges for every class and instance, and
 there is exactly one of each thing here: one input list, one queue, one log. Classes would
