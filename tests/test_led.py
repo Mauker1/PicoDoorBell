@@ -150,11 +150,11 @@ check('and the state is connected', m.led.ledState, m.led.LED_CONNECTED)
 # --- 8. A delivered ring blinks the alert ----------------------------------
 m = fresh()
 sent = []
-m.send_message = lambda chat, msg: (sent.append(msg), (m.net.REQUEST_OK, 200, {}))[1]
+m.telegram.send_message = lambda chat, msg: (sent.append(msg), (m.net.REQUEST_OK, 200, {}))[1]
 m.led.set_led_state(m.led.LED_CONNECTED)
 m.ringqueue.enqueue_ring(2000)
 m.led.led.levels.clear()
-m.flush_queue()
+m.telegram.flush_queue()
 check('a delivered ring was sent', len(sent), 1)
 check('and blinked the alert', len(m.led.led.levels) > 0, True)
 check('the LED is back to connected after the alert', m.led.led.value(), 1)
@@ -163,7 +163,7 @@ check('the LED is back to connected after the alert', m.led.led.value(), 1)
 m = fresh()
 m.led.set_led_state(m.led.LED_CONNECTED)
 m.led.led.levels.clear()
-m.flush_queue()                 # empty queue
+m.telegram.flush_queue()                 # empty queue
 check('an empty flush does not blink', m.led.led.levels, [])
 
 # --- 9. error_halt records the error state ---------------------------------

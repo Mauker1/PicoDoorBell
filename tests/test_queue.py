@@ -47,7 +47,7 @@ def fresh(at=100000, keep_state=False):
         except OSError:
             pass
     m = stubs.load_firmware()
-    m.send_message = recorder(m)
+    m.telegram.send_message = recorder(m)
     return m
 
 
@@ -63,7 +63,7 @@ def reboot():
     m.persist.load()
     m.setup_hardware()
     m.ringqueue.restore_queue()
-    m.send_message = recorder(m)
+    m.telegram.send_message = recorder(m)
     return m
 
 
@@ -84,12 +84,12 @@ os.chdir(tempfile.mkdtemp())
 m = fresh()
 WLAN.connected = False
 m.ringqueue.enqueue_ring(2000)
-m.flush_queue()
+m.telegram.flush_queue()
 check('nothing delivered while offline', len(sent), 0)
 check('the ring is waiting, not gone', len(m.ringqueue.queue), 1)
 
 WLAN.connected = True
-m.flush_queue()
+m.telegram.flush_queue()
 check('delivered once the network returns', len(sent), 1)
 check('queue emptied', len(m.ringqueue.queue), 0)
 
@@ -99,12 +99,12 @@ WLAN.connected = False
 m.ringqueue.enqueue_ring(2000)
 clock[0] += 90000                        # 90 s outage
 WLAN.connected = True
-m.flush_queue()
+m.telegram.flush_queue()
 check('a delayed ring is marked as such', 'delayed 90s' in sent[0], True)
 
 m = fresh()
 m.ringqueue.enqueue_ring(2000)
-m.flush_queue()
+m.telegram.flush_queue()
 check('a prompt ring is not marked', 'delayed' in sent[0], False)
 
 # --- 3. Order is preserved -------------------------------------------------
@@ -114,7 +114,7 @@ for width in (1000, 2000, 3000):
     m.ringqueue.enqueue_ring(width)
     clock[0] += 1000
 WLAN.connected = True
-m.flush_queue()
+m.telegram.flush_queue()
 check('all three delivered', len(sent), 3)
 
 # --- 4. The queue is bounded -----------------------------------------------
@@ -130,16 +130,16 @@ check('overflow counted', m.ringqueue.queueDropped, 5)
 m = fresh()
 m.ringqueue.enqueue_ring(2000)
 m.ringqueue.enqueue_ring(2000)
-m.send_message = recorder(m, outcome=m.net.REQUEST_FATAL)
-m.flush_queue()
+m.telegram.send_message = recorder(m, outcome=m.net.REQUEST_FATAL)
+m.telegram.flush_queue()
 check('undeliverable rings are dropped, not retried forever',
       len(m.ringqueue.queue), 0)
 
 # A retryable failure keeps them.
 m = fresh()
 m.ringqueue.enqueue_ring(2000)
-m.send_message = recorder(m, outcome=m.net.REQUEST_RETRY)
-m.flush_queue()
+m.telegram.send_message = recorder(m, outcome=m.net.REQUEST_RETRY)
+m.telegram.flush_queue()
 check('a retryable failure keeps the ring', len(m.ringqueue.queue), 1)
 
 # --- 6. Flash: only after an outage has run long ---------------------------
@@ -164,7 +164,7 @@ check('repeated calls do not rewrite',
 
 # Once delivered, the flash copy is cleared.
 WLAN.connected = True
-m.flush_queue()
+m.telegram.flush_queue()
 clock[0] += m.config.QUEUE_SNAPSHOT_MIN_MS + 1000
 m.ringqueue.maybe_snapshot_queue()
 check('the flash copy is cleared after delivery',
@@ -190,11 +190,11 @@ check('a ring queued on a healthy network writes nothing', stored, [])
 # --- 6c. An announcement is not lost to a failed send ----------------------
 m = fresh()
 m.pendingAnnouncement = 'boot report'
-m.send_message = recorder(m, outcome=m.net.REQUEST_RETRY)
+m.telegram.send_message = recorder(m, outcome=m.net.REQUEST_RETRY)
 m.flush_announcement()
 check('a failed announcement is retained',
       m.pendingAnnouncement, 'boot report')
-m.send_message = recorder(m)
+m.telegram.send_message = recorder(m)
 m.flush_announcement()
 check('and delivered on the next attempt', sent[-1], 'boot report')
 check('then cleared', m.pendingAnnouncement, None)
@@ -216,7 +216,7 @@ m2 = reboot()
 check('the ring came back', len(m2.ringqueue.queue), 1)
 check('marked as restored', m2.ringqueue.queue[0][m2.ringqueue.Q_RESTORED], True)
 
-m2.flush_queue()
+m2.telegram.flush_queue()
 check('and is delivered after the reset', len(sent), 1)
 check('described honestly, since its time is unknowable',
       'before a restart' in sent[0], True)

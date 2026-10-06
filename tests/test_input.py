@@ -47,7 +47,7 @@ def fresh(at=100000):
     clock[0] = at
     m = stubs.load_firmware()
     m.setup_hardware()
-    m.send_message = lambda chat, msg: (sent.append(msg), (0, 200, {}))[1]
+    m.telegram.send_message = lambda chat, msg: (sent.append(msg), (0, 200, {}))[1]
     m.lastPassTicks = clock[0]
     m.prevPassTicks = clock[0]
     return m, m.inputs[0]
@@ -68,7 +68,7 @@ def pass_loop(m, at):
     m.prevPassTicks = m.lastPassTicks
     m.lastPassTicks = at
     m.poll_inputs()
-    m.flush_queue()
+    m.telegram.flush_queue()
 
 
 os.chdir(tempfile.mkdtemp())

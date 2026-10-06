@@ -714,7 +714,7 @@ them.
 | `net.py` | WiFi connect/bounce, `do_request`, backoff | config, applog, wdt, led, resets |
 | `timesync.py` | C1 NTP sync: `sync_clock`, `maybe_resync_clock`, `lastNtpSync` | config, applog, wdt, net, persist, clockmod |
 | `ringqueue.py` | B6 queue storage: entries, `enqueue_ring`, snapshot and restore, `current_epoch` | config, applog, persist, clockmod, net |
-| `telegram.py` | `send_message`, `read_message`, commands (including `print_log`), queue delivery (`flush_queue`, `describe_delay`) | net, applog, clockmod, led, ringqueue |
+| `telegram.py` | `send_message`, `read_message`, commands (including `print_log`), queue delivery (`flush_queue`, `describe_delay`) | config, net, applog, clockmod, led, ringqueue |
 | `doorbell.py` | Input records, IRQ handlers, pulse judging | config, applog |
 | `main.py` | `boot()`, the loop, wiring | everything |
 
@@ -738,7 +738,7 @@ there.
 
 `applog.py` deliberately does **not** send, and reads nothing from `main`. It holds the
 buffer, its bound, the timestamp prefix and the append and report primitives. `print_log`,
-the `/log` command, stays with the network side (in `main` until `telegram.py` exists): it
+the `/log` command, stays with the network side (now in `telegram.py`): it
 needs `send_message`, and chunking under Telegram's limit and clearing only after a full send
 are transport policy. Moving it would point a dependency upward and make a cycle. The two
 values `applog` once read from `main` are injected instead: `reset_log(header)` takes the seed
@@ -785,6 +785,16 @@ rather than on `timesync`.
 through `persist`. It never sends. It reads `net.networkFailures` only to snapshot at once a
 ring that arrives while the network is already failing. Delivery stays with Telegram, which
 pops an entry once Telegram confirms it.
+
+`telegram.py` holds the bot API (`send_message`, `read_message`, `discard_update_backlog`,
+the update offset and Telegram's error wording), `/log` (`print_log`), and queue delivery
+(`flush_queue`, `describe_delay`). Commands dispatch through `telegram.commands`, a table of
+command text to `handler(chatId)` that `main` fills at import: `/log` is `telegram.print_log`,
+and `/status` is `main`'s `send_status`, because it needs the heartbeat. Unknown commands are
+still ignored, and the table gives A2 and D3 a natural place to land. `main` calls
+`telegram.setup(botToken, chatId)` once, which builds both URLs (not per request, which would
+allocate on every poll). The heartbeat and the startup announcement stay in `main`: they
+compose boot accounting, reset info and module state, which is `main`'s job.
 
 **Functions, not classes: decided.** MicroPython charges for every class and instance, and
 there is exactly one of each thing here: one input list, one queue, one log. Classes would

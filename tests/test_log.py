@@ -52,7 +52,7 @@ def fresh():
     mem32.cells.clear()
     WLAN.connected = True
     m = stubs.load_firmware()
-    m.send_message = make_sender(m)
+    m.telegram.send_message = make_sender(m)
     return m
 
 
@@ -81,14 +81,14 @@ check('the oldest is gone',
 # --- 2. An empty log says so -----------------------------------------------
 m = fresh()
 del m.applog.logLines[:]
-m.print_log('chat')
+m.telegram.print_log('chat')
 check('an empty log is reported, not sent blank', sent[0], 'Log is empty.')
 
 # --- 3. A short log goes in one message ------------------------------------
 m = fresh()
 del m.applog.logLines[:]
 m.applog.append_to_log('hello')
-m.print_log('chat')
+m.telegram.print_log('chat')
 check('one message for a short log', len(sent), 1)
 check('log cleared after a successful send', len(m.applog.logLines), 1)
 
@@ -101,7 +101,7 @@ for i in range(m.config.LOG_MAX_LINES):
 total = len(m.applog.log_text())
 check('the log exceeds a single message', total > 4096, True)
 
-m.print_log('chat')
+m.telegram.print_log('chat')
 check('it was split across messages', len(sent) > 1, True)
 check('every chunk fits Telegram',
       max(len(msg) for msg in sent) <= 4096, True)
@@ -117,8 +117,8 @@ del m.applog.logLines[:]
 for i in range(20):
     m.applog.append_to_log('entry %d' % i)
 before = len(m.applog.logLines)
-m.send_message = make_sender(m, fail=True)
-m.print_log('chat')
+m.telegram.send_message = make_sender(m, fail=True)
+m.telegram.print_log('chat')
 # The failure itself is logged, so the count grows rather than resetting.
 check('a log that failed to send is kept', len(m.applog.logLines) >= before, True)
 check('and it was not reset to a single line', len(m.applog.logLines) > 1, True)

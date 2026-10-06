@@ -711,7 +711,7 @@ remains for things nobody needs to watch happen.
 
 The buffer and its primitives (`logLines`, `append_to_log()`, `report()`,
 `log_prefix()`, `reset_log()`) live in `applog.py`, which never sends and reads
-nothing from `main`. Sending the log is `print_log()`'s job, on the network
+nothing from `main`. Sending the log is `print_log()`'s job, in `telegram.py`, on the network
 side, because chunking and clear-after-send are transport policy. A cleared
 log is seeded with a header line the caller passes in (the WiFi status), and
 the display offset is set once by `main` at import.
@@ -917,8 +917,11 @@ landed: it was reserved from the start.
 
 ## Reconnection
 
-One `connect()` is issued, then given 30 seconds to work before another is tried.
-After 20 attempts (roughly ten minutes) the board resets itself.
+One `connect()` is issued and given time to work before another is tried: a
+stalled attempt is reissued after `WIFI_REISSUE_MS` (10 seconds), while a join
+that is visibly progressing gets up to `WIFI_PROGRESS_MAX_MS` (20 seconds). After
+`WIFI_MAX_ATTEMPTS` (30) the board resets itself, so a hopeless outage ends in a
+reset after roughly five to ten minutes, depending on how far each attempt got.
 
 All of this lives in `net.py` (E2): the radio, the link, `do_request` and its
 backoff, and wedged-stack detection. Two things it must trigger live above it,
@@ -1290,7 +1293,7 @@ details are read.
 | File | Purpose |
 | --- | --- |
 | `main.py` | Firmware: boot, the main loop, and the wiring between modules |
-| `config.py`, `wdt.py`, `clockmod.py`, `led.py`, `applog.py`, `persist.py`, `resets.py`, `net.py`, `timesync.py`, `ringqueue.py` | Firmware modules split out of `main.py` (E2). All must be on the device; a missing one is an ImportError at boot. |
+| `config.py`, `wdt.py`, `clockmod.py`, `led.py`, `applog.py`, `persist.py`, `resets.py`, `net.py`, `timesync.py`, `ringqueue.py`, `telegram.py` | Firmware modules split out of `main.py` (E2). All must be on the device; a missing one is an ImportError at boot. |
 | `board.py` | Pin assignments for this board. Copied from `boards/` at install time. |
 | `secrets.py` | Credentials and chat configuration. User-edited, never written by the firmware. |
 | `state.json` | Tier 2 runtime state. Firmware-written, never user-edited. |

@@ -44,7 +44,7 @@ def fresh():
     # registered by setup_hardware() is absent unless we ask for it. The
     # heartbeat's input_summary() needs it to report a Doorbell line.
     m.setup_hardware()
-    m.send_message = lambda chat, msg: (sent.append(msg),
+    m.telegram.send_message = lambda chat, msg: (sent.append(msg),
                                         (m.net.REQUEST_OK, 200, {}))[1]
     return m
 
@@ -91,7 +91,7 @@ m = fresh()
 m.lastHeartbeat = 0
 clock[0] = m.config.HEARTBEAT_MS + 1000
 m.maybe_heartbeat()
-m.send_message = lambda chat, msg: (m.net.REQUEST_RETRY, 0, None)
+m.telegram.send_message = lambda chat, msg: (m.net.REQUEST_RETRY, 0, None)
 m.flush_announcement()
 check('a failed heartbeat is kept', m.pendingAnnouncement is not None, True)
 
@@ -110,8 +110,28 @@ check('and the next one goes out', m.maybe_heartbeat(), True)
 # --- 6. /status asks for the same thing on demand ---------------------------
 # This is what makes the memory figure readable without killing the run.
 m = fresh()
-m.read_message('chat')
+m.telegram.read_message('chat')
 check('status is a known command', m.config.statusCommand, '/status')
+
+# The command table routes a real getUpdates body. main fills it at import:
+# /status is main's handler (it needs the heartbeat), /log is telegram's own.
+stubs.Response.payload_override = {'ok': True, 'result': [
+    {'update_id': 41, 'channel_post': {'text': '/status'}}]}
+m = fresh()
+m.telegram.read_message('chat')
+check('/status answers with the heartbeat',
+      len(sent) == 1 and sent[0].startswith('Still here.'), True)
+check('the update offset moves past what was handled', m.telegram.updateId, 42)
+stubs.Response.payload_override = {'ok': True, 'result': [
+    {'update_id': 42, 'channel_post': {'text': '/log'}}]}
+m = fresh()
+m.applog.append_to_log('marker line')
+m.telegram.read_message('chat')
+check('/log answers with the log', any('marker line' in x for x in sent), True)
+stubs.Response.payload_override = None
+check('telegram is set up from secrets',
+      (m.telegram.chatId, m.telegram.getURL.endswith('/botTOKEN/getUpdates')),
+      ('-1001', True))
 
 # --- 7. The per-minute console print is gone --------------------------------
 src = open(SRC).read()

@@ -133,6 +133,10 @@ Ntptime.next_epoch = WALL_MP
 m.timesync.sync_clock()
 check('the sync report applies the board offset',
       any('Clock synced: 2024-06-01 14:' in line for line in m.applog.logLines), True)
+# And telegram's ring times, also wired separately.
+check('a delivered ring shows its time in the board offset',
+      m.telegram.describe_delay([clock[0], 500, WALL_MP, False]).startswith(' (2024-06-01 14:'),
+      True)
 
 ####################################################################################
 # Bad input never poisons the clock.
@@ -207,18 +211,18 @@ m.ringqueue.enqueue_ring(500)
 entry = m.ringqueue.queue[0]
 check('a live-clock ring records a real epoch', entry[m.ringqueue.Q_EPOCH], WALL_MP)
 check('describe_delay shows the ring time',
-      m.describe_delay(entry), ' (2024-06-01 12:00:00 +0000)')
+      m.telegram.describe_delay(entry), ' (2024-06-01 12:00:00 +0000)')
 
 # A restored ring's epoch is coarse: it is shown, but tagged approximate.
 restored = [clock[0], 500, WALL_MP, True]
-desc = m.describe_delay(restored)
+desc = m.telegram.describe_delay(restored)
 check('a restored ring shows its approximate time',
       '2024-06-01 12:00:00 +0000' in desc and 'before a restart' in desc, True)
 
 # With no epoch at all, the old relative wording still stands.
 noepoch = [clock[0], 500, None, True]
 check('a restored ring without an epoch keeps the old wording',
-      m.describe_delay(noepoch), ' (queued before a restart)')
+      m.telegram.describe_delay(noepoch), ' (queued before a restart)')
 
 ####################################################################################
 # Heartbeat surfaces clock state.

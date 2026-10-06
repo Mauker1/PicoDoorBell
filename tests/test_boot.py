@@ -96,7 +96,7 @@ check('connect_wifi sends nothing', 'http_post' in events, False)
 
 # --- 4. announce_startup picks the right message ---------------------------
 sent = []
-m.send_message = lambda chat, msg: (sent.append(msg), (0, 200, {}))[1]
+m.telegram.send_message = lambda chat, msg: (sent.append(msg), (0, 200, {}))[1]
 m.isStartup = True
 m.announce_startup()
 m.announce_startup()
