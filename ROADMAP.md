@@ -47,8 +47,8 @@ steps live in `docs/TESTING.md`. This section is current state only.
 
 | | Firmware | Notes |
 | --- | --- | --- |
-| **Production** | The C5 build | Still polls the input; no watchdog, no queue. Everything from `B1` onward is bench-only. |
-| **Bench** | Current tree | MAC `28:cd:c1:00:10:ed` |
+| **Production** | `da1b281`, promoted 2026-09-28 (boot #10) | All of Phase 1 plus `C1` and `G1`: the pre-E2 build, a single `main.py`. |
+| **Bench** | The E2 tree | Soaked on `cc9d72e` (step 8); the final tree still to run. MAC `28:cd:c1:00:10:ed` |
 
 Production MAC is `d8:3a:dd:af:cc:82`, so the two units are not confusable.
 
@@ -134,18 +134,92 @@ mechanism with production's watchdog fault. Production's power path is entirely 
 to sever that false link. The fix, if stabler bench soaks are wanted, is physical (feed the
 Pico directly, or keep the hub PSU stable), not firmware.
 
+### The reboot dataset, continued: the switching fault reproduced
+
+Times are UTC unless marked CEST. Everything on production shares one Brennenstuhl surge
+protector strip: the Pico's USB supply, a 3D printer, and phone chargers.
+
+- **`boot #8`**, `verdict=run-pin chip=RUN raw=0x00010000 cold`, ended a clean 6 d 6 h run on
+  `boot #7`, and landed **exactly** as the 3D printer on the same strip was switched on,
+  observed live. Different load from `boot #7` (work equipment), same fingerprint, same
+  switch-on timing. This upgraded the switching correlation from recalled to observed.
+- `boot #8` then ran 5 d 19 h clean (8 rings, 10 transients) until the promotion.
+- **Promotion, 2026-09-28, about 11:27.** `boot #9` was the unit running on the laptop during
+  the deploy; `boot #10` was the replug onto the production supply, and its `verdict=power
+  chip=POR/BOD` is the correct reading of that power cycle. Both are deploy events, excluded.
+- **`boot #11`**, `run-pin`, at about 12:13 (Telegram 14:13 CEST): a printer power cycle,
+  just after a `/status` that still showed `boot #10`.
+- **`boot #12`**, `run-pin`, at about 16:55, while swapping USB chargers on the strip. The
+  printer's own log puts its boot at 16:50:35, and a switch-on edge cannot cause a reset four
+  minutes later, so the chargers are the trigger.
+- **Deliberate provocation, 2026-09-29, 09:33 to 09:53 CEST**, Pico on the strip, external
+  reset leads connected: **switch-on or plug-in: 3 resets in 5** (`boot #13` charger A,
+  `boot #14` printer on, `boot #15` charger A); **switch-off or unplug: 0 in 3**. Charger A
+  reset the Pico in 2 of 3 plug-ins, and how long it had been unplugged made no difference.
+  Across the printer's own boot log (Sep 27 to 28), about 2 resets in 7 switch-ons.
+- **Quiet-strip control:** `boot #15` then ran at least 5 d 6 h (to Oct 4, 13:53, the last
+  report) with nothing plugged in or switched on the strip. No resets, and no transients
+  outside ring windows, while the loads already running (printer included) stayed on.
+- Earlier light-switch resets stopped once the protector went in. That fits: a light switch
+  throws its spike on the building wiring, which the protector clamps.
+
+**Working reading, now well supported.** The `run-pin` fault is **inrush at switch-on or
+plug-in of a load on the shared strip**, never the switch-off edge. It is probabilistic (about
+1 in 2 per charger plug-in), consistent with point-on-wave timing. The surge protector does
+not help because it clamps spikes arriving *from the wall*; sockets on one strip are wired
+straight to each other, so a neighbour's inrush reaches the Pico's supply unfiltered. Two
+coupling paths remain open, and the RUN-pin test plan separates them: **conducted** through the
+Pico's own supply on the strip, or **radiated** onto the external reset button leads, a far
+longer antenna than the board's own RUN trace (the bench has no leads and never shows this).
+A Raspberry Pi forum case (`viewtopic.php?t=386553`) matches closely: RUN-pin resets on a
+Pico W coinciding with boiler relays, cured with 100 nF to GND plus 1 kOhm to 3V3 at RUN.
+`G6` is the fix either way. The **watchdog/stall fault** (`boot #6`) is separate and has not
+recurred; with `C1` on production, a recurrence is now legible against the wall clock.
+
+**RUN-pin test plan** (a printed plan with trial sheets exists), one variable per phase,
+charger A plugged into the original strip as the provocation, 10 plug-ins per phase:
+
+| Phase | Setup | Status |
+| --- | --- | --- |
+| 1 | Pico supply on the strip, leads connected | Done: 3 in 5 switch-ons reset |
+| 2 | Pico supply on a wall outlet off the strip | Pending |
+| 3 | Pico on a power bank, USB lamp plugged in first to keep it awake | Pending |
+| 4 | On battery, external reset leads disconnected (only if phase 3 still resets) | Pending |
+
+At about 1 in 2, ten clean plug-ins happen by chance about 0.1% of the time. Phase 2 clean
+means conducted through the strip; phase 2 resetting but phase 3 clean means conducted through
+the wiring beyond it; phase 3 resetting but phase 4 clean means the leads are the antenna.
+Verification after `G6`: back on the strip with the RC fitted, 10 to 20 plug-ins, no resets.
+
+### Transient sources
+
+Every transient ever logged reads **0 ms**: a sub-millisecond glitch, never a partial pulse,
+and the pulse judging rejected every one.
+
+- **The door opener is one source**, confirmed by test (2026-09-28): ring alone, no transient;
+  ring and speak, none; ring, speak and open, a transient 9 s after the ring. Earlier pairs
+  (`boot #6`, `boot #8`) sat 5 to 8 s after a ring, as a human answering would. The strike is a
+  solenoid, and it seems to fire only during a call. It is probabilistic: 2 transients from 9
+  tested ring events on `boot #15`.
+- **At least one other source exists**: `boot #7` logged transients with no ring nearby, and
+  transients have outnumbered rings. The quiet-strip control showed none outside ring windows,
+  so switching events on the strip are the likely second source.
+
+This is the forum case's first problem too (spurious pulses on long leads from the same
+switching events); here the optocoupler and the pulse judging already contain it.
+
 ### Reading a reboot
 
 | Verdict | Meaning | Next step |
 | --- | --- | --- |
 | `power` | Supply: brownout or dip | Swap the USB adapter (queue item 9) |
-| `run-pin` | RUN line pulled low | Bisect: lift the on-board button |
+| `run-pin` | RUN line pulled low | Note what was switched or plugged in on the strip; see the RUN-pin test plan |
 | `watchdog` | A real timeout; the loop stalled past 8 s | Check what preceded it |
 | `self-reset` | The firmware chose it; `reason=` says why | Read the reason |
 | `warm-reset` | Soft reboot | Only expected on the bench |
 | `unstable=N` | N attempts since the last stable boot | A loop; investigate |
 
-`watchdog` and `self-reset` cannot occur on production until the current tree is promoted.
+Since the promotion of `da1b281`, all six verdicts can occur on production.
 
 ### Known cosmetic issue
 
@@ -224,7 +298,7 @@ path (disconnect WiFi, sleep 10 s) frees nothing.
 
 ### 🧪 A6: Log lifecycle correctness (P1)
 
-> **Still unverified:** the chunking path has never met a log long enough to split. The bench log has not passed 4096 characters since it landed.
+> **Still unverified:** the chunking path has never met a log long enough to split. The bench log has not passed 4096 characters since it landed. On production since `da1b281` (2026-09-28), still waiting on a long log there.
 Three defects, one fix:
 
 1. Clear the log after a **confirmed successful send**, not only on overflow. Today
@@ -240,7 +314,7 @@ Depends on A3.
 
 ### 🧪 A7: Boot-time backlog flush (P1)
 
-> **Still unverified:** no backlog has existed to discard since it was flashed, so `Discarded N stale update(s)` has never appeared.
+> **Still unverified:** no backlog has existed to discard since it was flashed, so `Discarded N stale update(s)` has never appeared. On production since `da1b281` (2026-09-28), still waiting on a backlog there.
 Call `getUpdates` with `offset=-1` once at startup to discard the buffered backlog.
 `updateId` starts at 0, so the first poll returns up to 100 buffered updates and a stale
 `/log` from hours ago replays on every reboot.
@@ -256,7 +330,7 @@ accept it and Telegram silently ignores it.
 
 ---
 
-### 🔬 A9: Request timeouts and a pre-flight connectivity check (P0)
+### ✅ A9: Request timeouts and a pre-flight connectivity check (P0)
 Observed twice on the bench: WiFi dropped while a request was in flight, `urequests` blocked
 with no timeout, and the watchdog reset the board. Once during a send, losing the ring, and
 once during `getUpdates`.
@@ -337,7 +411,7 @@ Behavior change, so its own commit with tests, alongside A10.
 
 ## B. Reliability
 
-### 🔬 B1: IRQ-driven doorbell input (P0)
+### ✅ B1: IRQ-driven doorbell input (P0)
 **The headline fix.** `Pin.irq(trigger=IRQ_RISING)` sets a latch flag; the main loop only
 drains it.
 
@@ -387,7 +461,7 @@ the count in the heartbeat (C3).
 > be over-engineering. The point is only to avoid a structure that would later have to be
 > undone.
 
-### 🔬 B2: Watchdog (P0)
+### ✅ B2: Watchdog (P0)
 `machine.WDT`, fed from the main loop. Timeout must accommodate **both** a slow TLS
 handshake (~8 s) **and** a worst-case flash sector erase.
 
@@ -421,7 +495,7 @@ created**. With no watchdog, the device is dead until someone power-cycles it.
 Also: remove the message-sending side effect from inside `connect_wifi()`. Connection and
 notification are separate concerns.
 
-### 🔬 B4: Bounded WiFi reconnection with backoff (P1)
+### ✅ B4: Bounded WiFi reconnection with backoff (P1)
 > **Mark the reset as intentional.** The `machine.reset()` after N failed cycles would
 > otherwise be indistinguishable from a watchdog bite: both read as `warm-reset`. Set a
 > marker in a spare scratch register before resetting, and clear it once read, so
@@ -442,7 +516,7 @@ flaky moment into notification noise.
 Classify: network errors → retry; parse errors → log and continue; `MemoryError` →
 `gc.collect()`, then reset if it recurs.
 
-### 🔬 B6: Offline event queue (P0)
+### ✅ B6: Offline event queue (P0)
 > **Demonstrated cleanly.** With A9 in place, dropping WiFi just after a press produces:
 > `Doorbell ring, 202ms` followed by `WiFi is disconnected.`, with the ring detected, measured,
 > counted and logged, then lost. No crash, no error, no trace beyond that line. This is now
@@ -483,7 +557,7 @@ Cap alerts per rolling window. A stuck-high input line currently means one messa
 5 seconds, forever. On suppression, send **one** "input appears stuck" notice rather than
 falling silent.
 
-### 🔬 B8: WiFi power save (P2)
+### ✅ B8: WiFi power save (P2)
 `wlan.config(pm=0xa11140)` for the mains-powered build; the well-known Pico W latency fix.
 
 Make it a **config flag**, not a hardcoded call: the battery build will want the opposite
@@ -493,8 +567,11 @@ tradeoff.
 
 ## C. Observability
 
-### 🔬 C1: Real timestamps (P1)
+### ✅ C1: Real timestamps (P1)
 
+> On production since `da1b281` (2026-09-28): synced about 6 s after WiFi came up, and its
+> timestamps are what made the switching correlations in the reboot dataset exact.
+>
 > Bench-verified over a clean 23 h soak (boot #34): NTP synced at boot and resynced
 > unattended twice on the 12 h timer, the wall clock stayed coherent across the whole run
 > (per-minute log lines one minute apart for hours), free memory was flat and fully
@@ -539,9 +616,10 @@ clock still answers the door, an implausible epoch (below a 2020 sanity floor) i
 rather than anchored, and the blocking UDP call is bracketed by watchdog feeds with a low
 socket timeout.
 
-### 🔬 C2: Structured, bounded logging (P2, partially done)
+### C2: Structured, bounded logging (P2, partially done)
 > Bounding and the ring behaviour landed early: the log is now a bounded list of lines rather
-> than a growing string. Levels and memory instrumentation are still outstanding.
+> than a growing string, on production since `da1b281`. Levels and memory instrumentation are
+> still outstanding.
 
 Levels (DEBUG / INFO / WARN / ERROR). Ring buffer that drops oldest rather than refusing new
 entries: the current `append_to_log` stops accepting anything once full, so the log
@@ -556,7 +634,7 @@ log to console on *every* error.
 handled by a compact code in the scratch registers plus, optionally, a *single* flash write
 on the way to a reset. Never continuous log persistence.
 
-### 🔬 C3: Heartbeat (P0)
+### ✅ C3: Heartbeat (P0)
 
 > ✅ **Verified.** Free memory: 159,968 at 2 min, 153,984 at 71 min, 153,184 at 181 min,
 > then **153,264 at both 360 and 720 min**: identical to the byte across six hours of
@@ -565,7 +643,9 @@ on the way to a reset. Never continuous log persistence.
 >
 > Two other things fell out of the same run: heartbeats arrived unprompted at six and
 > twelve hours, so the schedule works unattended, and flash writes stayed at 38 for twelve
-> hours, confirming empirically that nothing writes on a timer.
+> hours, confirming empirically that nothing writes on a timer. (Later refined: each 12-hour
+> NTP resync writes the coarse `epochAnchor` copy, the one deliberate timed write; see I1.
+> The 12-hour window ended just before the first resync.)
 >
 > **This closes the socket-leak question** from the original review. It could not have been
 > answered without the heartbeat: every attempt to read the figure by hand ended the run
@@ -723,13 +803,24 @@ instructions. It should become *"edit `config.py`."*
 
 ### 🧪 E2: Module split (P1, raised)
 
-> **Still unverified:** code complete, bench verification pending. Steps 1 to 10 took
-> `main.py` from 1720 lines to 532, across 13 modules; the wrap-up made the loop a function
-> (`run_pass()`, driven by `run()`) and added a gate check that rejects implicit globals. The
-> bench plan ran on the step 8 tree (`cc9d72e`) and passed except test 5.2, which found A10, a
-> gap that predates the split. To close: finish the soak, run the final tree on the bench for
-> a few days, and take the free-memory reading at a heartbeat with the log full (the 7-minute
-> reading of 154,608 bytes is not comparable to production's ~146 KB, which has a full log).
+> **Still unverified:** the final tree on the bench. Steps 1 to 10 took `main.py` from 1720
+> lines to 532, across 13 modules; the wrap-up made the loop a function (`run_pass()`, driven
+> by `run()`) and added a gate check on `global` declarations. Bench results so far are on the
+> step 8 tree (`cc9d72e`), recorded below. To close: run the final tree on the bench for a few
+> days with a reduced check set aimed at the code moved since step 8 (boot with a clock sync,
+> a ring and a glitch, `/status` and `/log`, a short WiFi outage), then mark it done.
+
+**Bench results on the step 8 tree (`cc9d72e`, Oct 2026).** The E2 bench plan passed except
+test 5.2, which found A10, a gap that predates the split. The 3-day soak that followed (boot
+#50) passed outright:
+
+| Measure | Result |
+| --- | --- |
+| Uptime | 3 days, no reboots |
+| Free memory at heartbeat | 146,416 bytes to 18 h, then 146,304 bytes flat for two days: one settling step, no leak |
+| Flash writes | 91 to 96, exactly one per 12 hours of uptime, matching the wear model |
+| Cost of the split | Production's pre-E2 build (`da1b281`) reads ~146,352 bytes at heartbeat; the E2 tree reads within about 60 bytes of that. Different boards and log contents, so approximate, but a real cost would show in kilobytes and does not. `.mpy` is not needed for heap; it would still save flash and import time |
+| Cost of the full log | About 8.3 KB: 154,608 bytes at 7 minutes against 146,304 at heartbeat |
 
 `main.py` was **1720 lines**, up from 209 at the start of this work. It was P2 when the file
 was small enough that the cost of leaving it alone was theoretical. It no longer is.
@@ -918,10 +1009,14 @@ extension. Not for stopping one HTTPS POST from blocking a pin read.
 
 ## F. Testing & tooling
 
-### F1: Host-side stubs (P2)
+### ✅ F1: Host-side stubs (P2)
 Fake `machine`, `network`, `rp2`, `urequests` modules so the logic runs under CPython.
 
 This is the enabler for the whole category, and it is what makes E2 safe to attempt.
+
+Done: `tests/stubs.py` provides the fakes, and `stubs.load_firmware()` reloads every module in
+`FIRMWARE_MODULES` under them, so all ten suites import the firmware for real. It carried E2
+through every step with the gate green.
 
 ### F2: Unit tests (P2)
 Cover:
@@ -952,8 +1047,11 @@ PEP 8 naming, drop parenthesized conditions, remove dead code (`startupTime`, tr
 
 ## G. Hardware & UX
 
-### 🔬 G1: LED state machine (P2)
+### ✅ G1: LED state machine (P2)
 
+> On production since `da1b281` (2026-09-28): blinked while connecting, then solid once
+> connected, on the Carrier V1.2 board as on the bench.
+>
 > Bench-verified on hardware (boot #37): solid on at rest when connected; a delivered ring
 > shows a double-blink then returns to solid (a rejected transient shows nothing, so the
 > alert is correctly gated to real deliveries); dropping the AP produced the ~1 Hz
@@ -961,7 +1059,7 @@ PEP 8 naming, drop parenthesized conditions, remove dead code (`startupTime`, tr
 > on. That reconnect cycle is the path the old inversion bug lived on, and the LED tracked
 > reality throughout, blinking while down, solid only once actually back up. The error blink
 > (`LED_ERROR`) cannot be triggered without a fatal setup fault and stays test-covered.
-> `tests/test_led.py`, 28 assertions. Not yet on production.
+> `tests/test_led.py`, 28 assertions. On production since `da1b281` (see above).
 
 Distinct patterns for connecting / connected / error / alert-sent.
 
@@ -1019,17 +1117,24 @@ retrofit.
 
 ### G6: RUN pin noise immunity (P1)
 Fit **100 nF from RUN to GND**, as close to the pin as layout allows, plus a **10 kΩ
-pull-up from RUN to 3V3**.
+pull-up from RUN to 3V3**, or 1 kΩ (see below).
+
+> **Now evidence-backed, not precautionary.** Production has reset with `chip=RUN` six times
+> on a switch-on or plug-in on its shared surge-protector strip (`boot #7`, `#8`, `#11` to
+> `#15`), reproducibly at about 1 in 2 per charger plug-in, and never on a switch-off. See
+> *The reboot dataset, continued*. The RUN-pin test plan decides which coupling path it is;
+> G6 is the fix for both. **Value choice:** the forum case that matches this one used a
+> **1 kΩ** pull-up, ten times stiffer than 10 kΩ. The costs are small: about 3.3 mA while the
+> reset button is held, and an RC of about 0.1 ms, far shorter than a press. Bodge 10 kΩ first;
+> if resets persist, try 1 kΩ before a board revision.
 
 The RP2040's internal RUN pull-up is weak (~50 kΩ), leaving a high-impedance node with a
 length of wire attached and little noise immunity.
 
-> **Note on evidence.** This item was originally justified by the observation that re-mating
-> the reset connector rebooted the board. That observation has since been set aside as an
-> artifact of connector travel (see hardware queue item 6) and is *not* evidence for
-> electromagnetic pickup. G6 remains worth doing as standard practice for a RUN line with
-> wire attached, but it is **precautionary**: nothing currently confirms RUN as the cause,
-> and C4 should decide whether it justifies a board revision.
+> **Original note on evidence, superseded by the box above.** This item was originally
+> justified by the observation that re-mating the reset connector rebooted the board. That
+> observation was set aside as an artifact of connector travel (see hardware queue item 7),
+> and G6 was then held as precautionary until C4 could decide. C4 has since decided.
 
 The capacitor gives roughly a 5 ms time constant against the internal pull-up: long enough
 to swallow a transient, short enough not to interfere with the button or startup. The
@@ -1039,10 +1144,9 @@ voltage far less. Together they are meaningfully better than either alone.
 Prototype on protoboard first, then a carrier board revision. Also check whether the reset
 cable runs near the doorbell wiring or mains: rerouting may help as much as the capacitor.
 
-> This establishes that the RUN line *can* be disturbed trivially. It does not yet prove
-> the mains-switching reboots share that mechanism: plugging a connector is a physical
-> disturbance, a light switch is an electromagnetic one. C4 closes that gap: `chip=RUN` on
-> a reboot coinciding with a light switch is the confirmation.
+> This established that the RUN line *can* be disturbed trivially, but not that the
+> mains-switching reboots shared the mechanism. C4 closed that gap: `chip=RUN` on resets
+> coinciding with loads switched on the strip is the confirmation, now observed repeatedly.
 
 ### ✅ G7: Characterise the ring pulse (P1, was blocking B1)
 Measure how long the optocoupler output actually stays asserted during a ring.
@@ -1251,7 +1355,11 @@ Costs one extra erase per write: irrelevant at these frequencies, and it buys in
 **Do not rewrite `secrets.py`.** Runtime state belongs in a separate file; rewriting a source
 file the user also edits by hand invites a merge conflict on a microcontroller.
 
-### 🔬 I3: Wear instrumentation (P2)
+### ✅ I3: Wear instrumentation (P2)
+
+> On production since `da1b281`: the counter matched the wear model exactly across boots #10
+> to #15 and on the E2 bench soak, two writes per boot plus one per 12 hours (see I1).
+
 Keep a monotonic write counter inside the state file and report it in the heartbeat (C3).
 
 This makes wear **observable** rather than theoretical. If the counter climbs faster than
@@ -1329,11 +1437,12 @@ rather than left as a trap for anyone reading top to bottom.
 ### ✅ Phase 1, Stop the bleeding, complete
 
 ✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → ✅ `C4` → ✅ `C5` →
-🔬 `A9` → 🔬 `B1` → 🔬 `B2` → 🔬 `B4` → 🔬 `B6` → 🔬 `B8` →
-🧪 `A6` → 🧪 `A7` → 🧪 `C3`
+✅ `A9` → ✅ `B1` → ✅ `B2` → ✅ `B4` → ✅ `B6` → ✅ `B8` →
+🧪 `A6` → 🧪 `A7` → ✅ `C3`
 
-Production runs everything up to `C5`. The rest is on the bench: most of it verified, three
-items still under test. Each 🧪 item says what it is waiting on.
+All of Phase 1 runs on production since the promotion of `da1b281` (2026-09-28). `A6` and
+`A7` are on production too, but still waiting on the conditions that would exercise them (a
+log long enough to split, a backlog to discard); each says so.
 
 Five items were pulled forward from later phases by bench findings rather than plan:
 
@@ -1347,13 +1456,11 @@ Five items were pulled forward from later phases by bench findings rather than p
 
 The device no longer loses presses, no longer fails silently, and reports its own health.
 
-### ⏳ Production milestone: before Phase 2
+### ✅ Production milestone: before Phase 2
 
-Production runs the **C5 build**. Everything from `B1` onward is bench-only.
-
-1. Finish the bench soak; take the free-memory trend from `C3`.
-2. Promote the current tree to production.
-3. Let the reboot dataset accumulate: a week or two.
+Reached. The bench soak finished, `da1b281` (all of Phase 1 plus `C1` and `G1`) was promoted
+on 2026-09-28 as `boot #10`, and the reboot dataset has accumulated since: see *The reboot
+dataset, continued*, which is what turned the switching fault from recalled to reproduced.
 
 Nothing in Phase 2 or 3 should start before this. The reboot investigation is the reason `C4`
 exists, it only produces data on the production unit, and a large refactor on top of code
@@ -1361,21 +1468,25 @@ that has never run in place would confuse both.
 
 ### Phase 2: Restructure
 
-`F1` → `E2` → `F2` → `F3`
+✅ `F1` → 🧪 `E2` → `F2` → `F3`
 
 `E2` was the highest-priority item: `main.py` was 1720 lines, and every correctness change
 in Phase 3 would have made it longer. It is now code complete (see its entry), so those
 changes land in files that make sense.
 
-**Tests before the refactor, not after.** All eight test files reach into `main.py` by AST
-extraction and break on the first move. `F1` rewrites them as plain imports, one module at a
-time.
+**Tests before the refactor, not after.** The test files used to reach into `main.py` by AST
+extraction, which would have broken on the first move. `F1` rewrote them as plain imports
+before E2 began, and every E2 step then kept the gate green.
 
 ### Phase 3: Correctness
 
-`A1` · `A2` · `A4` · `E1` · `D2` · `D3` · `B5` · `I1` · `H1` · `C6`
+`A10` · `A11` · `A1` · `A2` · `A4` · `E1` · `D2` · `D3` · `B5` · `I1` · `H1` · `C6`
 
-`C1` was originally scoped into this phase but was pulled forward and is now bench-verified
+`A10` and `A11` come first: both were found on the E2 bench run, both are behavior changes the
+refactor deliberately left alone, and both land cleanly in the new modules (`A10` through the
+`net.on_wait` hook, `A11` split between `net` and `telegram`). `A10` is P0.
+
+`C1` was originally scoped into this phase but was pulled forward and is now on production
 (see its entry above); it is no longer part of the remaining Phase 3 work.
 
 The device already behaves correctly *here*: this deployment uses a channel, which the
@@ -1386,6 +1497,7 @@ Suggested order within the phase:
 
 | Group | Items | Why together |
 | --- | --- | --- |
+| Delivery | `A10` · `A11` | Found on the bench; first behavior changes on the new modules |
 | Update handling | `A1` · `A2` · `A4` | One rewrite of the parser and dispatch |
 | Configuration | `E1` · `D2` | Both move values out of source; `D2` decides whether `secrets.py` is renamed |
 | Hygiene | `D3` · `B5` · `I1` · `H1` · `C6` | Small, independent |
@@ -1397,12 +1509,12 @@ update handling, configuration, and hygiene.
 
 ### Phase 4: Polish and roadmap
 
-`B7` · `C2` *(finish)* · `G1` · `I3` · `E3` · `E5` · `A8` · `D4` · `F4` · `G4` · `G10` ·
-`H2` · `H3` · `H5`
+`B7` · `C2` *(finish)* · ✅ `G1` · ✅ `I3` · `E3` · `E5` · `A8` · `D4` · `F4` · `G4` · `G10` ·
+`H2` · `H3` · ✅ `H5`
 
 Then, gated on hardware or a proven baseline: `J1` (needs `C4` and `B2` proven in the
-field), `G6` (needs the reboot data to justify a board revision), `G5` · `G9` · `G2` · `E4`
-(all future hardware).
+field), `G6` (the reboot data now justifies it; the RUN-pin test plan picks the path, then
+a bodge, then a board revision), `G5` · `G9` · `G2` · `E4` (all future hardware).
 
 ### Dependency edges worth respecting
 
@@ -1557,7 +1669,12 @@ Open items for the bench unit, none yet answered:
 6. **Charger module load-sharing.** Whether the load runs from USB while charging, or hangs
    off BAT+ with the cell charging and discharging simultaneously and held near 4.2 V.
    Affects cell longevity and what "on battery" means as a test condition.
-7. 🔬 **RUN pin pickup: elimination test running on production.** The external reset cable
+7. ✅ **RUN pin pickup: answered by detection.** C4 has labelled six in-service resets
+   `chip=RUN`, every one on a switch-on or plug-in on the shared strip; see *The reboot
+   dataset, continued* and the RUN-pin test plan, which now isolates the path. The history of
+   this item is kept below as written.
+
+   Original entry: **elimination test running on production.** The external reset cable
    is disconnected on the production unit, firmware unchanged, so the board carries exactly
    one changed variable. Record the disconnect date and the prior reboot rate; "none since"
    only means something against a baseline. If the trigger is reproducible (switching the
@@ -1644,7 +1761,10 @@ Open items for the bench unit, none yet answered:
    **A1 is therefore portability work, not a bug fix.** The parser is right for a channel and
    wrong for the DM and group paths the README documents, so it still matters for other
    users: just not urgently for this installation.
-9. **USB adapter quality on production.** A one-minute swap for a known-good supply is the
+9. **USB adapter quality on production.** Partly overtaken: the resets read `chip=RUN`, not
+   `POR/BOD`, so a sagging adapter is no longer the leading reading. The supply path is still
+   tested, more directly, by phases 2 and 3 of the RUN-pin test plan (off the strip, then on a
+   battery). A one-minute swap for a known-good supply is the
    cheapest test of the brownout hypothesis and needs no hardware revision. **Raised in
    priority** by the failed reproduction attempt: a cheap adapter sagging under a mains
    transient fits the symptom as well as RUN pickup does, and remains untested.
@@ -1709,3 +1829,10 @@ would need pasting in by hand.
 
 C4 adjudicates regardless: `chip=RUN` keeps it alive, `chip=POR/BOD` points at the
 supply.
+
+**Update.** C4 has since reported `chip=RUN` on every in-service reset, but the triggers were
+loads switched on the flat's own strip, not TwinBus activity, so the reboot dataset favours
+coupling through the Pico's supply or its reset leads over this cross-barrier path. The
+transients are a different story: the door opener sometimes produces a 0 ms glitch on
+the input, which is TwinBus-side switching reaching the optocoupler stage. See *Transient
+sources*. This item stays open as the explanation for those, not for the resets.
