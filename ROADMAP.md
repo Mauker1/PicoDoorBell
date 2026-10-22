@@ -48,7 +48,7 @@ steps live in `docs/TESTING.md`. This section is current state only.
 | | Version | Firmware | Notes |
 | --- | --- | --- | --- |
 | **Production** | 0.9.0 | `da1b281`, promoted 2026-09-28 (boot #10) | All of Phase 1 plus `C1` and `G1`: the pre-E2 build, a single `main.py`. Running `boot #17` since 2026-10-22. |
-| **Bench** | None yet; 1.0.0-1 next | The E2 tree | Soaked on `cc9d72e` (step 8) for 16 days; the final tree still to run. MAC `28:cd:c1:00:10:ed` |
+| **Bench** | None yet; 1.0.0-1 next | The E2 tree | Soaked on `cc9d72e` (step 8) for 16 days and still running; the final tree still to run. For the soak it runs from its own USB adapter on its own surge protector strip, not the laptop hub. MAC `28:cd:c1:00:10:ed` |
 
 Production MAC is `d8:3a:dd:af:cc:82`, so the two units are not confusable.
 
@@ -190,11 +190,13 @@ once, as `boot #16` (see *The long soak*); `C1` placed it in time, but the RAM l
 survive the reset, so the stall itself is still unseen.
 
 **RUN-pin test plan** (a printed plan with trial sheets exists), one variable per phase,
-charger A plugged into the original strip as the provocation, 10 plug-ins per phase:
+charger A plugged into the original strip as the provocation, 10 plug-ins per phase. Phase 1b
+was added after `boot #17` and uses the next-room outlets instead:
 
 | Phase | Setup | Status |
 | --- | --- | --- |
 | 1 | Pico supply on the strip, leads connected | Done: 3 in 5 switch-ons reset |
+| 1b | As phase 1, but the provocation is the printer or the light plugged into the next-room outlets | Pending |
 | 2 | Pico supply on a wall outlet off the strip | Pending |
 | 3 | Pico on a power bank, USB lamp plugged in first to keep it awake | Pending |
 | 4 | On battery, external reset leads disconnected (only if phase 3 still resets) | Pending |
@@ -202,6 +204,19 @@ charger A plugged into the original strip as the provocation, 10 plug-ins per ph
 At about 1 in 2, ten clean plug-ins happen by chance about 0.1% of the time. Phase 2 clean
 means conducted through the strip; phase 2 resetting but phase 3 clean means conducted through
 the wiring beyond it; phase 3 resetting but phase 4 clean means the leads are the antenna.
+Phase 1b measures how often a load on the next-room outlets resets the Pico. If it resets
+often, phases 3 and 4 repeat it as a second provocation: on battery, a reset from the next
+room means the leads, and none means the building wiring.
+
+**Paired control, once 1.0.0-1 is flashed.** The bench moves onto production's surge protector
+strip, so both units see every provocation on the same supply. What differs is the board
+(prototype against carrier V1.2) and the external reset leads, which only production has.
+Every trial from phase 1b on records the bench as well: production resetting while the bench
+holds points at the leads or the board; both resetting points at the supply. Phases 2 to 4
+move only production's supply, and the bench stays on the strip throughout. The 1.0.0-1 soak
+(the 12 d 12 h check of `A12`, and the run that closes `E2`) starts only after the trials, so a
+bench reset during them costs nothing; one during the soak is data in its own right. The
+printed plan has trial sheets for phases 1b to 4 and for the check after `G6`.
 Verification after `G6`: back on the strip with the RC fitted, 10 to 20 plug-ins, no resets.
 
 ### The long soak, Oct 2026
@@ -252,9 +267,13 @@ raw=0x00010000 cold` at 17:49 CEST (15:49 UTC) on 2026-10-22, ending `boot #16` 
 together in the next room. Neither is on the Pico's strip. Those outlets are about 5 to 6 m
 along that room's long wall from the wall outlet feeding the strip, which sits on the far
 side of a shared wall, and about 6 m from the Pico and its reset leads. Which load did it,
-and whether at the plug or the switch, is not known. The bench did not reset, but it shares
-nothing with production's power path (laptop hub behind its own extra surge protector) and
-has no leads, so that says little.
+and whether at the plug or the switch, is not known. The flat has three distribution boards;
+the one in that room also feeds the area where the Pico is, so a shared circuit is plausible.
+
+The bench did not reset. For the soak it runs from its own USB adapter on its own surge
+protector strip, possibly on the same building circuit, and it has no external leads. One
+clean result at an unknown rate is weak evidence, but if the bench does share the circuit,
+the leads become the main difference between the two units.
 
 This is the first `run-pin` reset from a load not on the shared strip, so the strip-internal
 path is not the only one. The disturbance reached RUN either conducted through the building
