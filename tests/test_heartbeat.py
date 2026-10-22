@@ -57,6 +57,8 @@ m.uptimeSeconds = 90061          # 1d 1h 1m
 text = m.heartbeat_text()
 
 check('it says it is alive', 'Still here.' in text, True)
+check('it names the firmware right after',
+      text.split('\n')[1], 'Firmware: ' + m.VERSION)
 check('uptime is human readable', '1d 1h 1m' in text, True)
 check('free memory is reported', 'Free memory:' in text, True)
 check('the boot number is reported', 'Boot: #' in text, True)

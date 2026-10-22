@@ -42,6 +42,20 @@ import doorbell
 from secrets import secrets
 
 ####################################################################################
+# Firmware version (C8): in the heartbeat, the startup announcement and the boot
+# log, so every report names the build that sent it.
+#
+# MAJOR.MINOR.PATCH-BUILD. BUILD goes up by one in every commit that changes a
+# firmware file and never resets, so a version names exactly one firmware tree.
+# MAJOR.MINOR.PATCH is set in the commit that prepares a flash: MAJOR when the
+# deploy contract changes (the files to flash, board.py or secrets.py keys),
+# MINOR for new behavior, PATCH for fixes. Promotion drops -BUILD and changes
+# nothing else. Full rule: docs/TESTING.md.
+####################################################################################
+
+VERSION = '1.0.0-1'
+
+####################################################################################
 # Board definition. Single source of truth for pin assignments -- main.py holds no
 # defaults, so a board it cannot identify is a board it refuses to drive.
 #
@@ -185,7 +199,8 @@ def announce_startup():
         # Carry the reset diagnosis into the chat. The reboots being chased
         # happen on the production unit, not the bench, so this message is
         # the only place the evidence reliably surfaces.
-        pendingAnnouncement = config.startupText + '\n' + resets.format_reset_info(resetInfo)
+        pendingAnnouncement = (config.startupText + '\nFirmware: ' + VERSION +
+                               '\n' + resets.format_reset_info(resetInfo))
         isStartup = False
     else:
         # Deliberately no reset summary. Nothing reset -- the network came
@@ -249,6 +264,7 @@ def heartbeat_text():
     gc.collect()
     lines = [
         'Still here.',
+        'Firmware: ' + VERSION,
         'Uptime: ' + format_uptime(uptimeSeconds),
         'Boot: #' + str(bootNumber if bootNumber is not None else '?') +
         ' (' + resets.reset_verdict(resetInfo) + ')',
@@ -409,6 +425,9 @@ def boot():
     # and a later crash would take the evidence with it.
     resetInfo = resets.read_reset_info()
     lastHeartbeat = time.ticks_ms()
+    # Before anything that can halt, so even a board that stops at
+    # setup_hardware() has said which build it is running.
+    applog.report('Firmware ' + VERSION)
 
     try:
         setup_hardware()

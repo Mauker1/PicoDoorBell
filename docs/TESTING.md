@@ -172,7 +172,6 @@ something a short session cannot provide:
 
 | Item | Waiting on |
 | --- | --- |
-| `A6` | A log long enough to split across messages. Send `/log` only after a busy stretch. |
 | `A7` | A backlog to discard. Send a command while the board is rebooting, then look for `Discarded N stale update(s)`. |
 | `C3` | Days of heartbeats. One reading is a baseline; a flat trend is the verification. |
 
@@ -195,7 +194,7 @@ changed, plus anything still marked 🧪.
 
 ### Still under test (see *Currently under test* above)
 
-`A6` needs a log past 4096 characters. `A7` needs a backlog to discard. `C3` needs days of
+`A7` needs a backlog to discard. `C3` needs days of
 heartbeats.
 
 ### Verified and unchanged: no need to repeat
@@ -213,13 +212,33 @@ verification.
 
 ---
 
+## Versioning a build
+
+`VERSION` in `main.py` is `MAJOR.MINOR.PATCH-BUILD` (`C8`).
+
+- **Every commit that changes a firmware file bumps `BUILD` by one.** It never resets, so a
+  version names exactly one firmware tree, and the first commit after a release cannot reuse
+  a number already flashed.
+- **The commit that prepares a flash sets `MAJOR.MINOR.PATCH`** to the release this build is
+  heading for, judged against the last release: MAJOR when the deploy contract changes (the
+  files to flash, or the keys in `board.py` or `secrets.py`), MINOR for new behavior, PATCH
+  for fixes. Between flashes it may lag; only a device ever shows it.
+- **Promotion drops `-BUILD`** in a commit that changes nothing else, so production runs the
+  tree the bench verified.
+- **After flashing,** the console's first line is `Firmware <version>` and the startup
+  message carries `Firmware: <version>`. Add the build to *Releases* in `ROADMAP.md`.
+
+---
+
 ## Promoting to production
 
 1. Back up the current `main.py` on the device under another name.
 2. Copy `boards/board_v1_2.py` to the device as `board.py` (**GP16**).
 3. Leave production's `secrets.py` alone.
-4. Flash `main.py`.
-5. Confirm `Doorbell input ready on GP16` and a startup message in the channel.
+4. Flash every firmware file listed in `docs/ARCHITECTURE.md`, with `VERSION` set to the
+   release (see *Versioning a build*). Keep the device's own `board.py` and `secrets.py`.
+5. Confirm `Doorbell input ready on GP16` and a startup message in the channel whose
+   `Firmware:` line shows the release.
 6. Ring the real doorbell.
 7. **Jab it as briefly as possible** and read the logged width. This is the only
    way to learn the minimum a real ring can produce, and it decides whether

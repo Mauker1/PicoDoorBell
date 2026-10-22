@@ -749,10 +749,18 @@ that trade entirely: a soak now measures itself.
 
 ### Contents
 
-Uptime, boot number and reset verdict, free memory, RSSI and IP, per-input
-counters (rings, transients, unpollable), queue depth and drops, and the flash
-write count. Consecutive network failures and an undelivered announcement are
+Firmware version, uptime, boot number and reset verdict, free memory, RSSI and IP,
+per-input counters (rings, transients, unpollable), queue depth and drops, and the
+flash write count. Consecutive network failures and an undelivered announcement are
 included only when non-zero, so an ordinary report stays short.
+
+### Firmware version
+
+`VERSION` in `main.py` (`C8`) names the build in three places: the heartbeat's second
+line, the startup announcement (between the startup text and the reset summary), and
+the first line `boot()` logs, before anything that can halt. It lives in `main` because
+`main` is flashed on every deploy and composes both messages; no module needs it. The
+numbering rule is in `docs/TESTING.md`.
 
 ### Uptime is accumulated, not derived
 

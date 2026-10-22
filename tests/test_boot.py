@@ -11,6 +11,7 @@ The board-guard cases below deliberately import without booting, because
 they assert that the import itself refuses a missing or incomplete board.
 """
 import os
+import re
 import sys
 import tempfile
 
@@ -108,6 +109,10 @@ check('the startup message carries the reset summary',
       'Reset: boot #' in sent[0], True)
 check('the reconnect message does not',
       'Reset: boot #' in sent[1], False)
+check('the startup message names the firmware',
+      'Firmware: ' + m.VERSION + '\n' in sent[0], True)
+check('the reconnect message does not',
+      'Firmware:' in sent[1], False)
 
 # --- 5. Board definition is mandatory --------------------------------------
 # These assert the import itself refuses a bad board, so they import without
@@ -180,6 +185,15 @@ for _ in range(5):
 check('no millisecond is lost between passes',
       m.uptimeSeconds * 1000 + m.uptimeCarryMs - before, 2000)
 check('the carry stays below one second', m.uptimeCarryMs < 1000, True)
+
+# --- 9. The version is well formed and logged at boot (C8) -------------------
+# MAJOR.MINOR.PATCH with an optional -BUILD: a typo here would put a
+# misleading label on every report the device sends.
+m = load_and_boot()
+check('VERSION is MAJOR.MINOR.PATCH with an optional -BUILD',
+      re.match(r'^\d+\.\d+\.\d+(-\d+)?$', m.VERSION) is not None, True)
+check('boot logs the firmware version',
+      any(line.endswith(' Firmware ' + m.VERSION) for line in m.applog.logLines), True)
 
 print()
 print('%d/%d passed' % (sum(results), len(results)))

@@ -45,12 +45,21 @@ steps live in `docs/TESTING.md`. This section is current state only.
 
 ### What is running where
 
-| | Firmware | Notes |
-| --- | --- | --- |
-| **Production** | `da1b281`, promoted 2026-09-28 (boot #10) | All of Phase 1 plus `C1` and `G1`: the pre-E2 build, a single `main.py`. Running `boot #16` since 2026-10-15. |
-| **Bench** | The E2 tree | Soaked on `cc9d72e` (step 8) for 16 days; the final tree still to run. MAC `28:cd:c1:00:10:ed` |
+| | Version | Firmware | Notes |
+| --- | --- | --- | --- |
+| **Production** | 0.9.0 | `da1b281`, promoted 2026-09-28 (boot #10) | All of Phase 1 plus `C1` and `G1`: the pre-E2 build, a single `main.py`. Running `boot #16` since 2026-10-15. |
+| **Bench** | None yet; 1.0.0-1 next | The E2 tree | Soaked on `cc9d72e` (step 8) for 16 days; the final tree still to run. MAC `28:cd:c1:00:10:ed` |
 
 Production MAC is `d8:3a:dd:af:cc:82`, so the two units are not confusable.
+
+### Releases
+
+Every build flashed to production, and every bench build flashed for testing. The version
+rule is in `docs/TESTING.md` (*Versioning a build*); `C8` is the item.
+
+| Version | Date | Devices | Commit | Notes |
+| --- | --- | --- | --- | --- |
+| 0.9.0 | 2026-09-28 | Production | `da1b281` | Retroactive label: all of Phase 1 plus `C1` and `G1`, the pre-E2 single `main.py`. Prints no version |
 
 ### The reboot dataset
 
@@ -817,15 +826,23 @@ chat does not carry. A version string in the heartbeat (so `/status` too) and in
 announcement makes every report identify its firmware, reboot records included.
 
 - A `VERSION` constant in `main.py`: `main` is flashed on every deploy and owns both
-  messages. No new module.
+  messages. No new module. It is the heartbeat's second line, a line in the startup
+  announcement, and the first line `boot()` logs.
 - `MAJOR.MINOR.PATCH`: MAJOR when the deploy contract changes (the set of files to flash, or
   the keys in `board.py` and `secrets.py`), MINOR for new behavior, PATCH for fixes.
-- Bench builds carry a build number (`1.0.0-1`, `1.0.0-2`, and so on); releases to production
-  drop it.
+- `-BUILD` goes up by one in every commit that changes a firmware file and never resets, so a
+  version names exactly one firmware tree. A reset would let the first commit after a release
+  reuse a number already flashed.
+- `MAJOR.MINOR.PATCH` is set in the commit that prepares a flash, as the release that build is
+  heading for. Between flashes it may lag; harmless, since a version is only ever seen on a
+  device. Promotion is a commit that drops `-BUILD` and changes nothing else, so production
+  runs the tree the bench verified.
 - `da1b281` on production is 0.9.0 retroactively. It prints no version, so a heartbeat without
   a firmware line means 0.9.0. The final E2 tree with this item is 1.0.0-1 on the bench, and
   1.0.0 when promoted.
-- A Releases table in this document records version, date, devices and commit.
+- *Releases*, under *Status*, records every flashed version with its date, devices and commit.
+
+Code complete on `dev` as 1.0.0-1.
 
 ---
 
