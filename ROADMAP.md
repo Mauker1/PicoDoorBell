@@ -47,7 +47,7 @@ steps live in `docs/TESTING.md`. This section is current state only.
 
 | | Version | Firmware | Notes |
 | --- | --- | --- | --- |
-| **Production** | 0.9.0 | `da1b281`, promoted 2026-09-28 (boot #10) | All of Phase 1 plus `C1` and `G1`: the pre-E2 build, a single `main.py`. Running `boot #16` since 2026-10-15. |
+| **Production** | 0.9.0 | `da1b281`, promoted 2026-09-28 (boot #10) | All of Phase 1 plus `C1` and `G1`: the pre-E2 build, a single `main.py`. Running `boot #17` since 2026-10-22. |
 | **Bench** | None yet; 1.0.0-1 next | The E2 tree | Soaked on `cc9d72e` (step 8) for 16 days; the final tree still to run. MAC `28:cd:c1:00:10:ed` |
 
 Production MAC is `d8:3a:dd:af:cc:82`, so the two units are not confusable.
@@ -171,10 +171,12 @@ protector strip: the Pico's USB supply, a 3D printer, and phone chargers.
   outside ring windows, while the loads already running (printer included) stayed on. Its
   full run, to Oct 15, is in *The long soak* below.
 - Earlier light-switch resets stopped once the protector went in. That fits: a light switch
-  throws its spike on the building wiring, which the protector clamps.
+  throws its spike on the building wiring, which the protector clamps. `boot #17`
+  shows that not every disturbance from the building wiring is clamped (see *The long soak*).
 
 **Working reading, now well supported.** The `run-pin` fault is **inrush at switch-on or
-plug-in of a load on the shared strip**, never the switch-off edge. It is probabilistic (about
+plug-in of a load on the shared strip**, never the switch-off edge; since `boot #17`, of a
+load on other outlets in the flat too (see *The long soak*). It is probabilistic (about
 1 in 2 per charger plug-in), consistent with point-on-wave timing. The surge protector does
 not help because it clamps spikes arriving *from the wall*; sockets on one strip are wired
 straight to each other, so a neighbour's inrush reaches the Pico's supply unfiltered. Two
@@ -241,8 +243,24 @@ can outlast the 8 s watchdog, and `getaddrinfo` can block outside any timeout (s
 clean since: 6 d 18 h at the last report (2026-10-22 11:46). `C9` is the answer to the next
 one: it names the stalled step across the reset.
 
-**No `run-pin` reset in the whole period**, Sep 29 to Oct 22, about 23 days across both
-boots. What was switched on the strip in that time is not recorded.
+**No `run-pin` reset from Sep 29 until `boot #17`** on Oct 22, about 23 days across `boot #15`
+and `boot #16`. What was switched on the strip in that time is not recorded.
+
+**`boot #17`: a `run-pin` reset from a load off the strip.** `verdict=run-pin chip=RUN
+raw=0x00010000 cold` at 17:49 CEST (15:49 UTC) on 2026-10-22, ending `boot #16` after about
+6 d 22 h, while a light and a second 3D printer were being plugged into two wall outlets close
+together in the next room. Neither is on the Pico's strip. Those outlets are about 5 to 6 m
+along that room's long wall from the wall outlet feeding the strip, which sits on the far
+side of a shared wall, and about 6 m from the Pico and its reset leads. Which load did it,
+and whether at the plug or the switch, is not known. The bench did not reset, but it shares
+nothing with production's power path (laptop hub behind its own extra surge protector) and
+has no leads, so that says little.
+
+This is the first `run-pin` reset from a load not on the shared strip, so the strip-internal
+path is not the only one. The disturbance reached RUN either conducted through the building
+wiring and past the strip's protector, which clamps overvoltage spikes while an inrush is
+mostly a dip and fast ringing below its clamp level, or radiated onto the external reset
+leads, less likely at six metres but not excluded. `G6` addresses both.
 
 ### Transient sources
 
@@ -270,7 +288,7 @@ switching events); here the optocoupler and the pulse judging already contain it
 | Verdict | Meaning | Next step |
 | --- | --- | --- |
 | `power` | Supply: brownout or dip | Swap the USB adapter (queue item 9) |
-| `run-pin` | RUN line pulled low | Note what was switched or plugged in on the strip; see the RUN-pin test plan |
+| `run-pin` | RUN line pulled low | Note what was switched or plugged in, on the strip or nearby outlets; see the RUN-pin test plan |
 | `watchdog` | A real timeout; the loop stalled past 8 s | Check what preceded it |
 | `self-reset` | The firmware chose it; `reason=` says why | Read the reason |
 | `warm-reset` | Soft reboot | Only expected on the bench |
@@ -985,6 +1003,10 @@ active-high/active-low polarity, feature toggles.
 The README's "Final details" section is currently a list of *"now go edit source code"*
 instructions. It should become *"edit `config.py`."*
 
+The country code is concrete: `rp2.country('DE')` is hardcoded in `net.py` (noted during
+`E2`). An open project used outside Germany needs it configurable, here rather than in
+`board.py`.
+
 ### 🧪 E2: Module split (P1, raised)
 
 > **Still unverified:** the final tree on the bench. Steps 1 to 10 took `main.py` from 1720
@@ -1083,9 +1105,6 @@ single reader of `secrets.py`. `describe_api_error()` and `retry_after()` read T
 JSON, not HTTP, so they wait for `telegram.py`; `retry_after()` currently has no callers, so a
 429 gets the ordinary backoff. Decide its fate there.
 
-> **Noted for later:** `rp2.country('DE')` is hardcoded in `net.py`. An open project used
-> outside Germany needs it configurable, in `board.py` or `config.py`.
-
 Step 9 splits the original `telegram.py` row three ways, because the row bundled three
 unrelated things and following it literally would create upward dependencies: `timesync.py`
 (NTP, not Telegram), `ringqueue.py` (queue storage, which the future `doorbell.py` must reach
@@ -1140,7 +1159,7 @@ the opposite of how it is tempting to do it.
 **Implicit globals: resolved.** The loop used to run at module scope, so its assignments
 (`lastLogCheck`, `prevPassTicks`, `lastPassTicks`, `uptimeMs`) mutated globals without
 declaration, and each would have become a silent local the moment the loop moved into a
-function. The wrap-up did that move deliberately: `run_pass()` declares all four, a test runs
+function. The wrap-up did that move deliberately: `run_pass()` declares them all (five since `A12` split uptime in two), a test runs
 two real passes and checks each one moved, and `tools/check.py` now fails the gate on any
 firmware function that assigns a module global without declaring it, so the class cannot
 come back. `run_pass()` is also what G5 needs: a battery build can drive it from a
