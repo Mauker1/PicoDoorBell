@@ -217,8 +217,7 @@ different builds, and both stayed flat afterwards (production for 3 d 18 h, the 
 MicroPython stores without allocating (2^30 minus 1 on rp2) and becomes a heap integer. The
 wrap is harmless: every stored tick is compared through `ticks_diff` and refreshed far inside
 its 2^29 ms range, and the bench ran 3.5 days past it. The heap integer costs a permanent
-allocation and a little garbage on every pass. Agreed fix: count uptime in seconds, which
-stays a small integer for about 34 years.
+allocation and a little garbage on every pass. Fix: `A12`, count uptime in seconds.
 
 **`boot #16`: the watchdog fault recurred.** `verdict=watchdog chip(stale)=RUN
 raw=0x00010000 warm (cause=WDT_RESET wdt=0x1)`. The `RUN` bits are `boot #15`'s, correctly
@@ -230,7 +229,8 @@ watchdog bite on production, after `boot #6`, about five weeks apart. The known 
 the request timeout applies per socket operation, so a slow lookup, connect and read together
 can outlast the 8 s watchdog, and `getaddrinfo` can block outside any timeout (see the note in
 `net.py`). A supply event would read `run-pin` or `power`, not `watchdog`. `boot #16` has run
-clean since: 6 d 18 h at the last report (2026-10-22 11:46).
+clean since: 6 d 18 h at the last report (2026-10-22 11:46). `C9` is the answer to the next
+one: it names the stalled step across the reset.
 
 **No `run-pin` reset in the whole period**, Sep 29 to Oct 22, about 23 days across both
 boots. What was switched on the strip in that time is not recorded.
@@ -457,6 +457,21 @@ mishandled twice:
    Still needed after batching: `/log` chunks and repeated sends can hit the limit too.
 
 Behavior change, so its own commit with tests, alongside A10.
+
+---
+
+### A12: Uptime counter outgrows a small integer at 12.4 days (P3)
+`uptimeMs` in `main` accumulates milliseconds for the whole uptime. At 2^30 ms (12 d 10 h
+15 m) it passes the largest integer MicroPython stores without allocating and becomes a heap
+integer. Both units showed it as a permanent 224-byte step in free memory at that uptime (see
+*The long soak*), plus a little garbage on every pass. Harmless, but it is a step in the very
+figure the heartbeat exists to watch.
+
+Fix (agreed): count uptime in whole seconds, carrying the millisecond remainder between passes
+so nothing drifts. A small integer then lasts about 34 years. `format_uptime()` and the tests
+that read `uptimeMs` follow.
+
+A fix, so its own commit with tests; planned for the 1.0.0 bench build.
 
 ---
 
@@ -791,6 +806,64 @@ pulse. A ceiling nearer 5 s would treat a long assertion as the fault it probabl
 
 Wants `G10`'s burst measurement first: if a held button really does produce one long pulse
 on some installations, the current ceiling is right.
+
+---
+
+### C8: Firmware version (P1)
+Builds were told apart by commit hashes and labels like "the E2 tree", which a heartbeat in a
+chat does not carry. A version string in the heartbeat (so `/status` too) and in the startup
+announcement makes every report identify its firmware, reboot records included.
+
+- A `VERSION` constant in `main.py`: `main` is flashed on every deploy and owns both
+  messages. No new module.
+- `MAJOR.MINOR.PATCH`: MAJOR when the deploy contract changes (the set of files to flash, or
+  the keys in `board.py` and `secrets.py`), MINOR for new behavior, PATCH for fixes.
+- Bench builds carry a build number (`1.0.0-1`, `1.0.0-2`, and so on); releases to production
+  drop it.
+- `da1b281` on production is 0.9.0 retroactively. It prints no version, so a heartbeat without
+  a firmware line means 0.9.0. The final E2 tree with this item is 1.0.0-1 on the bench, and
+  1.0.0 when promoted.
+- A Releases table in this document records version, date, devices and commit.
+
+---
+
+### C9: Watchdog breadcrumb (P1)
+A watchdog bite takes the RAM log with it, so the one failure the firmware cannot report is
+the stall that caused it: `boot #6` and `boot #16` are both unexplained. Before each blocking
+step (DNS and request, NTP sync, flash write, WiFi join), write a short phase code to a
+watchdog scratch register, and clear it afterwards. Scratch survives a warm watchdog reset and
+costs no flash wear, so the next boot can say what it was doing, for example "stalled in:
+getUpdates request".
+
+Open before building: scratch 0 to 3 are in use (`resets.py`), and the bootrom can use 4 to 7
+when the watchdog reboots to an address. Confirm a free slot is safe, or pack the code into a
+register the firmware already owns. Trace first.
+
+Wanted in the build promoted as 1.0.0: production is where the bites happen.
+
+---
+
+### C10: Separate destination for heartbeats (P2)
+Heartbeats go to the same chat as ring alerts: four a day, in a chat people read for the
+doorbell. Two changes, decided:
+
+- **Commands answer where they were asked.** `/status` and `/log` reply to the chat the
+  command came from, channel or DM. Today `read_message()` ignores the update's own chat and
+  replies to the configured one.
+- **Scheduled health messages get their own destination:** an optional second chat id in
+  `secrets.py`, a channel for the board or a DM to the owner. With none set they stay in the
+  alert chat, so existing installs keep working (an optional key, not a deploy contract
+  change). Ring alerts stay where they are.
+
+Still to decide: whether the startup and reconnect announcements, which carry the reset
+diagnosis, move with the health messages.
+
+Depends on `D3`: once replies go wherever a command came from, any chat the bot sits in can
+ask, so only authorized chats may command; otherwise a stranger who adds the bot to a group
+gets the heartbeat, IP address included. Depends on `A1`: a DM arrives as `message`, not
+`channel_post`, and the parser reads only the latter today.
+
+Required before any public release on `main` (see *Sequencing*).
 
 ---
 
@@ -1531,9 +1604,12 @@ before E2 began, and every E2 step then kept the gate green.
 
 ### Phase 3: Correctness
 
-`A10` · `A11` · `A1` · `A2` · `A4` · `E1` · `D2` · `D3` · `B5` · `I1` · `H1` · `C6`
+`C8` · `A12` · `C9` · `A10` · `A11` · `A1` · `A2` · `A4` · `E1` · `D2` · `D3` · `B5` · `I1` ·
+`H1` · `C6` · `C10`
 
-`A10` and `A11` come first: both were found on the E2 bench run, both are behavior changes the
+`C8` and `A12` go first, in the 1.0.0-1 bench build that also closes `E2`; `C9` should join
+them before 1.0.0 is promoted, since production is where watchdog bites happen. `A10` and
+`A11` come next: both were found on the E2 bench run, both are behavior changes the
 refactor deliberately left alone, and both land cleanly in the new modules (`A10` through the
 `net.on_wait` hook, `A11` split between `net` and `telegram`). `A10` is P0.
 
@@ -1548,6 +1624,7 @@ Suggested order within the phase:
 
 | Group | Items | Why together |
 | --- | --- | --- |
+| Release 1.0.0 | `C8` · `A12` · `C9` | Version in every report, the uptime fix, and a readable watchdog bite |
 | Delivery | `A10` · `A11` | Found on the bench; first behavior changes on the new modules |
 | Update handling | `A1` · `A2` · `A4` | One rewrite of the parser and dispatch |
 | Configuration | `E1` · `D2` | Both move values out of source; `D2` decides whether `secrets.py` is renamed |
@@ -1557,6 +1634,14 @@ Suggested order within the phase:
 because `ticks_ms` timestamps made every other diagnosis harder, and the queue already
 carried an epoch field waiting for it. Its early completion is why this phase is now purely
 update handling, configuration, and hygiene.
+
+### Before a public release on `main`
+
+`main` is what other people build from, so it must not ship behavior that only suits this
+deployment. Required before the first public release from `dev` to `main`: `C10`, so health
+messages need not land in the chat people read for the doorbell, and with it the `A1` and `D3`
+it depends on. `A2` and `A4`, the rest of the update-handling group, are the natural
+candidates to join them; decide when the release is planned.
 
 ### Phase 4: Polish and roadmap
 
@@ -1577,6 +1662,8 @@ C4 ──▶ J1                 rollback needs to detect a failed boot
 I2 ──▶ J1                 atomic swap reuses the same pattern
 B1 ──▶ E5                 long polling is only safe once input is decoupled
 B1 ──▶ G9                 a second input is another entry in the latch list
+A1 ──▶ C10                a DM arrives as message, not channel_post
+D3 ──▶ C10                replies go wherever asked, so only authorized chats may ask
 D2 ──▶ E1                 whether secrets.py is renamed decides where config lands
 ```
 
