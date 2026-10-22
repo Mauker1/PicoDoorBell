@@ -867,6 +867,29 @@ Required before any public release on `main` (see *Sequencing*).
 
 ---
 
+### C11: Device name in messages (P2)
+Nothing in a message says which device sent it. One bot per device is the clean model,
+because Telegram serves `getUpdates` as a single queue per bot. Two devices sharing a token
+misbehave in three ways:
+
+- Both answer every command. Each acknowledges an update only at its next poll, about 61 s
+  later, and the other device's poll almost always lands before that.
+- Telegram refuses overlapping polls with a 409, logged as a failed `getUpdates`.
+- One device's boot-time flush (`A7`) acknowledges everything waiting, swallowing commands
+  the other has not seen.
+
+Several doors can still share a chat, one bot each: a `/status` there gets one answer per
+door. That is only readable if each answer says which door it is. Add an optional name per
+device that heads the heartbeat and the startup announcement, and optionally the ring alert
+("Doorbell activated! (Front door)"). With no name set, messages read as today. Whether the
+key lives in `board.py` or `secrets.py` is for the trace. Related to `G9`: a second input on
+one device would name the door per input rather than per device.
+
+Required before any public release on `main`, together with the setup note that each device
+needs its own bot (now in the README).
+
+---
+
 ## D. Security
 
 ### ✅ D1: Stop leaking the bot token (P0, trivial)
@@ -1605,7 +1628,7 @@ before E2 began, and every E2 step then kept the gate green.
 ### Phase 3: Correctness
 
 `C8` · `A12` · `C9` · `A10` · `A11` · `A1` · `A2` · `A4` · `E1` · `D2` · `D3` · `B5` · `I1` ·
-`H1` · `C6` · `C10`
+`H1` · `C6` · `C10` · `C11`
 
 `C8` and `A12` go first, in the 1.0.0-1 bench build that also closes `E2`; `C9` should join
 them before 1.0.0 is promoted, since production is where watchdog bites happen. `A10` and
@@ -1640,7 +1663,7 @@ update handling, configuration, and hygiene.
 `main` is what other people build from, so it must not ship behavior that only suits this
 deployment. Required before the first public release from `dev` to `main`: `C10`, so health
 messages need not land in the chat people read for the doorbell, and with it the `A1` and `D3`
-it depends on. `A2` and `A4`, the rest of the update-handling group, are the natural
+it depends on; and `C11`, so several doorbells, one bot each, can share a chat. `A2` and `A4`, the rest of the update-handling group, are the natural
 candidates to join them; decide when the release is planned.
 
 ### Phase 4: Polish and roadmap

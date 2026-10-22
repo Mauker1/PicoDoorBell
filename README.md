@@ -144,6 +144,8 @@ As stated in the [official documentation](https://core.telegram.org/bots#6-botfa
 
 Get the generated token and replace it inside `secrets.py` under the `botToken` key.
 
+> **One bot per doorbell.** Create a separate bot, with its own token, for each device. Two devices sharing a token compete for the same command queue: both answer every command, and Telegram refuses overlapping polls. Several bots can still post into one shared channel or group.
+
 ### Choosing where to send the messages
 
 Now choose if you want to send the notifications directly as a DM or through a channel on Telegram.
