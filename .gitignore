@@ -145,3 +145,7 @@ state.json.tmp
 # committed docs or accidentally carry device details into the repo.
 handover.md
 handoff.md
+
+# Claude Code per-machine settings (permissions, model). Local by design: the
+# file exists to restrict what an agent may run on this checkout.
+.claude/settings.local.json
