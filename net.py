@@ -241,6 +241,7 @@ def bounce_wifi():
     """
     global networkBounceRequested, networkBounced
     global networkFailures, networkBackoffMs
+    previousPhase = resets.mark_phase(resets.PHASE_WIFI_BOUNCE)
     networkBounceRequested = False
     networkBounced = True
     networkFailures = 0
@@ -251,6 +252,7 @@ def bounce_wifi():
     except Exception as e:
         applog.report('WiFi disconnect failed: ' + str(e))
     wdt.sleep_fed(2)
+    resets.mark_phase(previousPhase)
     connect_wifi()
 
 def do_request(method, url, payload=None):
@@ -275,6 +277,9 @@ def do_request(method, url, payload=None):
         return (REQUEST_SKIPPED, 0, None)
 
     response = None
+    # Every POST is sendMessage and every GET is getUpdates (C9).
+    previousPhase = resets.mark_phase(
+        resets.PHASE_HTTP_SEND if method == 'POST' else resets.PHASE_HTTP_POLL)
     # A handshake can run into seconds; the watchdog must not bite mid-request.
     wdt.feed_watchdog()
     try:
@@ -327,6 +332,7 @@ def do_request(method, url, payload=None):
         # urequests leaks sockets quickly without this on a 264 KB part.
         gc.collect()
         wdt.feed_watchdog()
+        resets.mark_phase(previousPhase)
 
 def is_wifi_connected():
     wlan_status = wlan.status()
@@ -352,6 +358,9 @@ def connect_wifi():
     the only thing that clears it.
     """
     global wifiData, lastNetworkSuccess
+    # Restored on success. A give-up resets the board, and an exception
+    # leaves it for run_pass() to overwrite with 'loop'.
+    previousPhase = resets.mark_phase(resets.PHASE_WIFI_JOIN)
     attempts = 0
     issuedAt = None
     while True:
@@ -365,6 +374,7 @@ def connect_wifi():
             # A fresh link deserves a fresh grace period; otherwise the first
             # failure after a long outage looks like a dead network.
             lastNetworkSuccess = time.ticks_ms()
+            resets.mark_phase(previousPhase)
             return True
 
         now = time.ticks_ms()

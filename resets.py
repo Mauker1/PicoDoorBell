@@ -8,7 +8,8 @@
 # This module owns the scratch layout and the reset diagnosis: reading the
 # three sources, deciding the verdict, and formatting the "Reset:" line. It
 # depends only on machine, so it is a leaf. Callers never touch a scratch
-# index; they use mark_intended_reset() and clear_unstable_count().
+# index; they use mark_intended_reset(), clear_unstable_count() and
+# mark_phase().
 #
 # Boot accounting is deliberately not here. When a boot counts as stable,
 # and when that is worth a flash write, is policy that ties persist and this
@@ -51,6 +52,30 @@ SCRATCH_MAGIC_IDX = 2
 SCRATCH_UNSTABLE_IDX = 3
 
 SCRATCH_MAGIC = 0x50444231   # 'PDB1'
+
+# Scratch 3 is shared (C9): the unstable count in the low half, the phase
+# breadcrumb in the high half. A watchdog bite takes the RAM log with it, so
+# the phase is the only record of what stalled. Both halves stay small, so
+# every value written is a small int and marking a phase allocates nothing;
+# the address is computed once here for the same reason (it is above 2**30).
+UNSTABLE_MASK = 0xFFFF
+PHASE_SHIFT = 16
+PHASE_MASK = 0xFF
+SCRATCH_SHARED_ADDR = WATCHDOG_SCRATCH0 + SCRATCH_UNSTABLE_IDX * 4
+
+# Index is the code stored in scratch. 0 is what a hardware reset leaves.
+PHASE_NAMES = ('none', 'boot', 'loop', 'idle', 'wifi_join', 'wifi_bounce',
+               'http_send', 'http_poll', 'ntp', 'flash')
+PHASE_NONE = 0
+PHASE_BOOT = 1
+PHASE_LOOP = 2
+PHASE_IDLE = 3
+PHASE_WIFI_JOIN = 4
+PHASE_WIFI_BOUNCE = 5
+PHASE_HTTP_SEND = 6
+PHASE_HTTP_POLL = 7
+PHASE_NTP = 8
+PHASE_FLASH = 9
 
 # RP2040 VREG_AND_CHIP_RESET.CHIP_RESET. Records what caused the last reset
 # in hardware, independently of what MicroPython reports.
@@ -112,6 +137,7 @@ def read_reset_info():
         'selfReset': False,
         'resetReason': '',
         'warmBoot': False,
+        'phase': PHASE_NONE,
     }
     try:
         raw = machine.reset_cause()
@@ -143,11 +169,16 @@ def read_reset_info():
             # Magic intact: nothing reset the chip, so this was a soft
             # reboot or a watchdog bite.
             info['warmBoot'] = True
-            info['unstableBoots'] = scratch_read(SCRATCH_UNSTABLE_IDX) + 1
+            shared = scratch_read(SCRATCH_UNSTABLE_IDX)
+            info['unstableBoots'] = (shared & UNSTABLE_MASK) + 1
+            # What the previous run was doing when it stopped (C9).
+            info['phase'] = (shared >> PHASE_SHIFT) & PHASE_MASK
         else:
             info['unstableBoots'] = 1
             scratch_write(SCRATCH_MAGIC_IDX, SCRATCH_MAGIC)
-        scratch_write(SCRATCH_UNSTABLE_IDX, info['unstableBoots'])
+        scratch_write(SCRATCH_UNSTABLE_IDX,
+                      (info['unstableBoots'] & UNSTABLE_MASK) |
+                      (PHASE_BOOT << PHASE_SHIFT))
     except Exception:
         pass
     return info
@@ -203,8 +234,13 @@ def format_reset_info(info):
     if info is None:
         return 'Reset info unavailable'
     number = info['bootNumber']
+    verdict = reset_verdict(info)
     parts = ['boot #' + (str(number) if number is not None else '?'),
-             'verdict=' + reset_verdict(info)]
+             'verdict=' + verdict]
+    if verdict == 'watchdog' and info.get('phase'):
+        # Only a bite makes the breadcrumb meaningful: a cold boot zeroes it,
+        # and a self-reset carries its own reason.
+        parts.append('stalled=' + phase_name(info['phase']))
     if info['unstableBoots'] > 1:
         # More than one attempt since the last stable boot: a loop.
         parts.append('unstable=' + str(info['unstableBoots']))
@@ -243,8 +279,34 @@ def mark_intended_reset(code=0):
         pass
 
 def clear_unstable_count():
-    """Attempts since the last stable boot are now history. Never raises."""
+    """Attempts since the last stable boot are now history. Never raises.
+
+    Keeps the phase in the high half: the count and the breadcrumb share
+    scratch 3.
+    """
     try:
-        scratch_write(SCRATCH_UNSTABLE_IDX, 0)
+        shared = scratch_read(SCRATCH_UNSTABLE_IDX)
+        scratch_write(SCRATCH_UNSTABLE_IDX, shared & ~UNSTABLE_MASK)
     except Exception:
         pass
+
+def phase_name(code):
+    if 0 <= code < len(PHASE_NAMES):
+        return PHASE_NAMES[code]
+    return 'phase' + str(code)
+
+def mark_phase(code):
+    """Record what the firmware is about to block on (C9).
+
+    Returns the previous code, so a caller can restore it when its step is
+    done: nested steps (a flash write inside a WiFi join) then unwind
+    correctly. Keeps the unstable count in the low half. Called several
+    times a pass, so it allocates nothing. Never raises.
+    """
+    try:
+        shared = machine.mem32[SCRATCH_SHARED_ADDR]
+        machine.mem32[SCRATCH_SHARED_ADDR] = ((shared & UNSTABLE_MASK) |
+                                              (code << PHASE_SHIFT))
+        return (shared >> PHASE_SHIFT) & PHASE_MASK
+    except Exception:
+        return PHASE_NONE

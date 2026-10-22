@@ -53,7 +53,7 @@ from secrets import secrets
 # nothing else. Full rule: docs/TESTING.md.
 ####################################################################################
 
-VERSION = '1.0.0-1'
+VERSION = '1.0.0-2'
 
 ####################################################################################
 # Board definition. Single source of truth for pin assignments -- main.py holds no
@@ -484,6 +484,9 @@ def run_pass():
     """
     global lastLogCheck, prevPassTicks, lastPassTicks
     global uptimeSeconds, uptimeCarryMs
+    # The breadcrumb's default (C9): a bite outside every marked step reads
+    # 'loop'. Steps that can block mark themselves and restore this.
+    resets.mark_phase(resets.PHASE_LOOP)
     if (not net.is_wifi_connected()):
         net.connect_wifi()
         announce_startup()
@@ -523,6 +526,7 @@ def run():
     while True:
         try:
             run_pass()
+            resets.mark_phase(resets.PHASE_IDLE)
             wdt.sleep_fed(config.loopDelay)
 
         except KeyboardInterrupt:

@@ -29,6 +29,7 @@ import wdt
 import net
 import persist
 import clockmod
+import resets
 
 # Display offset for the sync report, in seconds. Set by main at import.
 utcOffset = 0
@@ -62,12 +63,15 @@ def sync_clock():
         # Older ntptime without a configurable timeout. The watchdog remains
         # the backstop, exactly as for urequests.
         pass
+    previousPhase = resets.mark_phase(resets.PHASE_NTP)
     try:
         epoch = ntptime.time()
     except Exception as e:
         applog.append_to_log('NTP sync failed: ' + str(e))
         wdt.feed_watchdog()
         return False
+    finally:
+        resets.mark_phase(previousPhase)
     wdt.feed_watchdog()
     if epoch < config.EPOCH_SANITY_FLOOR_MP:
         # A stalled read can return 0 or a tiny value. Anchoring to that

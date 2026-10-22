@@ -32,6 +32,7 @@ try:
 except ImportError:
     import os
 import applog
+import resets
 
 STATE_PATH = 'state.json'
 STATE_TMP = 'state.json.tmp'
@@ -135,6 +136,8 @@ def save_state():
     state['writes'] = state.get('writes', 0) + 1
     payload = json.dumps(state)
     f = None
+    # A sector erase stalls the CPU; if the watchdog bites here, say so (C9).
+    previousPhase = resets.mark_phase(resets.PHASE_FLASH)
     try:
         f = open(STATE_TMP, 'w')
         f.write(payload)
@@ -154,6 +157,8 @@ def save_state():
         except OSError:
             pass
         return False
+    finally:
+        resets.mark_phase(previousPhase)
 
 def state_get(key, fallback=None):
     return state.get(key, fallback)

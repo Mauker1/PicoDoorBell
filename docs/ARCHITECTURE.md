@@ -560,14 +560,42 @@ left `boots` at 2, and both attempts reported `boot #3`, the second with
 
 | Address | Register | Use |
 | --- | --- | --- |
-| `0x40058008` | `WATCHDOG.REASON` | Advisory only |
+| `0x40058008` | `WATCHDOG.REASON` | Watchdog verdict on a warm boot (TIMER or FORCE) |
+| `0x4005800c` | `WATCHDOG.SCRATCH0` | Self-reset reason code |
+| `0x40058010` | `WATCHDOG.SCRATCH1` | Self-reset marker `0x50444252` |
 | `0x40058014` | `WATCHDOG.SCRATCH2` | Magic word `0x50444231` |
-| `0x40058018` | `WATCHDOG.SCRATCH3` | Boot counter |
+| `0x40058018` | `WATCHDOG.SCRATCH3` | Low half: unstable boot count. High half: phase breadcrumb (`C9`) |
 | `0x40064008` | `VREG_AND_CHIP_RESET.CHIP_RESET` | Hardware reset record |
 
 Scratch registers 4-7 carry the bootrom's reboot-to-BOOTSEL handshake, so only
-0-3 are safe. 2 and 3 are used, leaving 0 and 1 alone in case the port wants
-them.
+0-3 are safe, and all four are in use.
+
+### The phase breadcrumb
+
+A watchdog bite takes the RAM log with it, so without help the one failure the
+firmware cannot explain is the stall that caused it. Before each step that can block,
+the firmware writes a phase code to the high half of scratch 3, and restores the
+previous code afterwards; the next boot reads it and, on a `watchdog` verdict only,
+reports it as `stalled=<phase>`.
+
+| Code | Phase | Marked by |
+| --- | --- | --- |
+| 1 | `boot` | `resets.read_reset_info()`, after reading the old value |
+| 2 | `loop` | `main.run_pass()`, at the start of every pass |
+| 3 | `idle` | `main.run()`, before the pause between passes |
+| 4 | `wifi_join` | `net.connect_wifi()` |
+| 5 | `wifi_bounce` | `net.bounce_wifi()` |
+| 6 | `http_send` | `net.do_request()`, POST (sendMessage) |
+| 7 | `http_poll` | `net.do_request()`, GET (getUpdates) |
+| 8 | `ntp` | `timesync.sync_clock()` |
+| 9 | `flash` | `persist.save_state()` |
+
+`mark_phase()` returns the code it replaced, which is how nested steps unwind: a
+snapshot written to flash while a WiFi join waits goes back to `wifi_join`, not to
+`loop`. It runs several times a pass, so it allocates nothing: the values are small
+ints and the register address, above 2^30, is computed once at import. Sharing the
+register with the unstable count costs a read-modify-write, and both directions are
+tested.
 
 ### Why this had to land before the watchdog
 

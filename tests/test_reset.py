@@ -79,7 +79,7 @@ check('cold boot flagged as cold', info['warmBoot'], False)
 check('cause name resolved', info['cause'], 'PWRON_RESET')
 check('POR decoded from chip register', info['flags'], ['POR/BOD'])
 check('magic word written for next boot', mem32[MAGIC_ADDR], 0x50444231)
-check('attempt counter written to scratch', mem32[UNSTABLE_ADDR], 1)
+check('attempt counter written to scratch', mem32[UNSTABLE_ADDR] & 0xFFFF, 1)
 
 # --- 2. Warm boot: magic survived, so power was never lost -----------------
 mem32[CHIP_RESET] = 1 << 16             # HAD_RUN
@@ -231,7 +231,7 @@ check('first boot is number 1', m.bootNumber, 1)
 check('no flash write before proving stable', os.path.exists('state.json'), False)
 stable_boot(m)
 check('stable boot is persisted', _json.load(open('state.json'))['boots'], 1)
-check('attempt counter cleared once stable', mem32[UNSTABLE_ADDR], 0)
+check('attempt counter cleared once stable', mem32[UNSTABLE_ADDR] & 0xFFFF, 0)
 
 # A power cycle clears the scratch area but must not lose the total.
 mem32.cells.clear()
@@ -299,6 +299,133 @@ try:
           m.resetInfo['unstableBoots'], 0)
 finally:
     stubs.mem32 = saved
+
+# --- 9. Watchdog breadcrumb (C9) -------------------------------------------
+# Scratch 3 carries the unstable count in its low half and the phase in its
+# high half. Each half must survive writes to the other, a bite must name the
+# step it interrupted, and every blocking step must mark itself and then
+# restore what it found.
+def phase_now():
+    return mem32[UNSTABLE_ADDR] >> 16
+
+
+mem32.cells.clear()
+mem32[CHIP_RESET] = 1 << 8
+set_reset_cause(1)
+m = load_and_boot()
+r = m.resets
+mem32[UNSTABLE_ADDR] = 2
+r.mark_phase(r.PHASE_HTTP_POLL)
+check('a phase keeps the unstable count', mem32[UNSTABLE_ADDR] & 0xFFFF, 2)
+check('and lands in the high half', phase_now(), r.PHASE_HTTP_POLL)
+check('mark_phase returns the phase it replaced',
+      r.mark_phase(r.PHASE_LOOP), r.PHASE_HTTP_POLL)
+r.clear_unstable_count()
+check('clearing the count keeps the phase', mem32[UNSTABLE_ADDR], r.PHASE_LOOP << 16)
+
+# A bite mid-poll: the next boot reads both halves and names the step.
+mem32[MAGIC_ADDR] = 0x50444231
+mem32[UNSTABLE_ADDR] = (r.PHASE_HTTP_POLL << 16) | 1
+mem32[WDT_REASON] = 1                   # TIMER: a real bite
+mem32[CHIP_RESET] = 0
+set_reset_cause(3)
+m = load_and_boot()
+check('a warm boot reads the phase', m.resetInfo['phase'], r.PHASE_HTTP_POLL)
+check('and the count without it', m.resetInfo['unstableBoots'], 2)
+check('a watchdog verdict names the stalled step',
+      'verdict=watchdog stalled=http_poll' in m.resets.format_reset_info(m.resetInfo), True)
+
+# A deliberate reset (FORCE) with a phase left over says nothing about it.
+mem32[UNSTABLE_ADDR] = r.PHASE_IDLE << 16
+mem32[WDT_REASON] = 2
+m = load_and_boot()
+check('other verdicts carry no stalled field',
+      'stalled=' in m.resets.format_reset_info(m.resetInfo), False)
+
+# Each blocking step marks itself while it runs and restores the phase after.
+seen = []
+
+
+class PhaseRequests:
+    def get(self, url, **kwargs):
+        seen.append(phase_now())
+        return stubs.Response()
+
+    def post(self, url, json=None, **kwargs):
+        seen.append(phase_now())
+        return stubs.Response()
+
+
+m.resets.mark_phase(r.PHASE_LOOP)
+m.net.requests = PhaseRequests()
+m.net.networkBackoffMs = 0
+m.net.do_request('GET', 'u')
+m.net.do_request('POST', 'u', {})
+check('a GET runs as http_poll, a POST as http_send',
+      seen, [r.PHASE_HTTP_POLL, r.PHASE_HTTP_SEND])
+check('a request restores the phase it found', phase_now(), r.PHASE_LOOP)
+
+
+class PhaseNtp:
+    timeout = None
+
+    def time(self):
+        seen.append(phase_now())
+        return 770558400                # 2024-06-01, 2000 epoch
+
+
+class PhaseOs:
+    def rename(self, a, b):
+        seen.append(phase_now())
+        os.rename(a, b)
+
+    def remove(self, path):
+        os.remove(path)
+
+
+del seen[:]
+m.timesync.ntptime = PhaseNtp()
+m.persist.os = PhaseOs()
+m.timesync.sync_clock()
+check('NTP runs as ntp, its flash write as flash',
+      seen, [r.PHASE_NTP, r.PHASE_FLASH])
+check('and both restore the phase they found', phase_now(), r.PHASE_LOOP)
+
+savedConnect = stubs.WLAN.connect
+
+
+def phase_connect(self, ssid, pw):
+    seen.append(phase_now())
+    savedConnect(self, ssid, pw)
+
+
+del seen[:]
+stubs.WLAN.connect = phase_connect
+stubs.WLAN.connected = False
+stubs.WLAN.connect_after = 1
+try:
+    m.net.connect_wifi()
+finally:
+    stubs.WLAN.connect = savedConnect
+    stubs.WLAN.connected = True
+    stubs.WLAN.connect_after = None
+check('a WiFi join runs as wifi_join', seen, [r.PHASE_WIFI_JOIN])
+check('and restores the phase on success', phase_now(), r.PHASE_LOOP)
+
+del seen[:]
+m.net.wlan.disconnect = lambda: seen.append(phase_now())
+m.net.bounce_wifi()
+check('a bounce disconnects as wifi_bounce, then restores',
+      (seen, phase_now()), ([r.PHASE_WIFI_BOUNCE], r.PHASE_LOOP))
+
+m.resets.mark_phase(r.PHASE_IDLE)
+m.run_pass()
+check('a loop pass runs as loop', phase_now(), r.PHASE_LOOP)
+src = open(os.path.join(HERE, '..', 'main.py')).read()
+runSrc = src[src.index('def run():'):src.index("if __name__ == '__main__':")]
+check('the loop marks idle before its pause',
+      runSrc.index('mark_phase(resets.PHASE_IDLE)') <
+      runSrc.index('sleep_fed(config.loopDelay)'), True)
 
 print()
 print('%d/%d passed' % (sum(results), len(results)))

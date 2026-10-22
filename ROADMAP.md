@@ -854,11 +854,29 @@ watchdog scratch register, and clear it afterwards. Scratch survives a warm watc
 costs no flash wear, so the next boot can say what it was doing, for example "stalled in:
 getUpdates request".
 
-Open before building: scratch 0 to 3 are in use (`resets.py`), and the bootrom can use 4 to 7
-when the watchdog reboots to an address. Confirm a free slot is safe, or pack the code into a
-register the firmware already owns. Trace first.
+**Built** (1.0.0-2 on `dev`, not yet flashed):
 
-Wanted in the build promoted as 1.0.0: production is where the bites happen.
+- **Where:** the high half of scratch 3, beside the unstable count in the low half. Scratch 0
+  to 3 were all in use and 4 to 7 belong to the bootrom's reboot handshake; scratch 3 is
+  written only at boot and at the stability gate, and its survival across a warm reset is
+  already proven on hardware. Scratch 0 was the alternative, rejected because it is part of
+  the reason-then-marker ordering that keeps a self-reset from reporting a wrong reason.
+- **Phases:** `boot`, `loop`, `idle`, `wifi_join`, `wifi_bounce`, `http_send` (every POST is
+  sendMessage), `http_poll` (every GET is getUpdates), `ntp`, `flash`. `resets.mark_phase()`
+  returns the phase it replaced and each step restores it, so nested steps (a flash write
+  inside a WiFi join) unwind correctly. `main` owns `loop` (start of every pass) and `idle`
+  (the pause between passes); each module marks its own blocking call.
+- **Report:** only on a `watchdog` verdict, as `stalled=<phase>` after the verdict. A cold boot
+  zeroes the register and a self-reset carries its own reason, so elsewhere it means nothing.
+- **Cost:** every value written is a small int and the address is computed once, so marking
+  allocates nothing on the device.
+- **Limit:** `urequests` does lookup, connect, TLS and read in one call, so `http_poll` does
+  not say which of them stalled. Resolving the address separately first would split that, as
+  a later behavior change, if the breadcrumb ever points there.
+
+Bench check, after the 1.0.0-1 soak: Ctrl-C into the REPL, let the watchdog bite, and the
+next startup should read `stalled=idle` or `stalled=loop`, proving the value survives a real
+bite. Wanted in the build promoted as 1.0.0: production is where the bites happen.
 
 ---
 
@@ -1005,10 +1023,10 @@ them.
 | `clockmod.py` | C1 anchor plus `clock_now`, `format_timestamp`, `clock_is_live`: pure time math | - |
 | `led.py` | G1 LED state machine | wdt |
 | `applog.py` | `logLines`, `append_to_log`, `report`, `log_text`, `reset_log`, `log_prefix` | config, clockmod |
-| `persist.py` | `state.json`, the tier rules, atomic write | applog |
-| `resets.py` | Scratch registers, `read_reset_info`, verdicts | - |
+| `resets.py` | Scratch registers, `read_reset_info`, verdicts, the C9 phase breadcrumb | - |
+| `persist.py` | `state.json`, the tier rules, atomic write | applog, resets |
 | `net.py` | WiFi connect/bounce, `do_request`, backoff | config, applog, wdt, led, resets |
-| `timesync.py` | C1 NTP sync: `sync_clock`, `maybe_resync_clock`, `lastNtpSync` | config, applog, wdt, net, persist, clockmod |
+| `timesync.py` | C1 NTP sync: `sync_clock`, `maybe_resync_clock`, `lastNtpSync` | config, applog, wdt, net, persist, clockmod, resets |
 | `ringqueue.py` | B6 queue storage: entries, `enqueue_ring`, snapshot and restore, `current_epoch` | config, applog, persist, clockmod, net |
 | `telegram.py` | `send_message`, `read_message`, commands (including `print_log`), queue delivery (`flush_queue`, `describe_delay`) | config, net, applog, clockmod, led, ringqueue |
 | `doorbell.py` | Input records, IRQ handlers, pulse judging | config, applog |
