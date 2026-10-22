@@ -47,8 +47,8 @@ steps live in `docs/TESTING.md`. This section is current state only.
 
 | | Firmware | Notes |
 | --- | --- | --- |
-| **Production** | `da1b281`, promoted 2026-09-28 (boot #10) | All of Phase 1 plus `C1` and `G1`: the pre-E2 build, a single `main.py`. |
-| **Bench** | The E2 tree | Soaked on `cc9d72e` (step 8); the final tree still to run. MAC `28:cd:c1:00:10:ed` |
+| **Production** | `da1b281`, promoted 2026-09-28 (boot #10) | All of Phase 1 plus `C1` and `G1`: the pre-E2 build, a single `main.py`. Running `boot #16` since 2026-10-15. |
+| **Bench** | The E2 tree | Soaked on `cc9d72e` (step 8) for 16 days; the final tree still to run. MAC `28:cd:c1:00:10:ed` |
 
 Production MAC is `d8:3a:dd:af:cc:82`, so the two units are not confusable.
 
@@ -159,7 +159,8 @@ protector strip: the Pico's USB supply, a 3D printer, and phone chargers.
   Across the printer's own boot log (Sep 27 to 28), about 2 resets in 7 switch-ons.
 - **Quiet-strip control:** `boot #15` then ran at least 5 d 6 h (to Oct 4, 13:53, the last
   report) with nothing plugged in or switched on the strip. No resets, and no transients
-  outside ring windows, while the loads already running (printer included) stayed on.
+  outside ring windows, while the loads already running (printer included) stayed on. Its
+  full run, to Oct 15, is in *The long soak* below.
 - Earlier light-switch resets stopped once the protector went in. That fits: a light switch
   throws its spike on the building wiring, which the protector clamps.
 
@@ -173,8 +174,9 @@ Pico's own supply on the strip, or **radiated** onto the external reset button l
 longer antenna than the board's own RUN trace (the bench has no leads and never shows this).
 A Raspberry Pi forum case (`viewtopic.php?t=386553`) matches closely: RUN-pin resets on a
 Pico W coinciding with boiler relays, cured with 100 nF to GND plus 1 kOhm to 3V3 at RUN.
-`G6` is the fix either way. The **watchdog/stall fault** (`boot #6`) is separate and has not
-recurred; with `C1` on production, a recurrence is now legible against the wall clock.
+`G6` is the fix either way. The **watchdog/stall fault** (`boot #6`) is separate. It recurred
+once, as `boot #16` (see *The long soak*); `C1` placed it in time, but the RAM log did not
+survive the reset, so the stall itself is still unseen.
 
 **RUN-pin test plan** (a printed plan with trial sheets exists), one variable per phase,
 charger A plugged into the original strip as the provocation, 10 plug-ins per phase:
@@ -191,6 +193,48 @@ means conducted through the strip; phase 2 resetting but phase 3 clean means con
 the wiring beyond it; phase 3 resetting but phase 4 clean means the leads are the antenna.
 Verification after `G6`: back on the strip with the RC fitted, 10 to 20 plug-ins, no resets.
 
+### The long soak, Oct 2026
+
+Both units then ran untouched for over two weeks. Figures are heartbeat readings, taken with
+the log full, so they compare with each other.
+
+| | Production `boot #15` | Bench `boot #50` |
+| --- | --- | --- |
+| Firmware | `da1b281` (pre-E2) | `cc9d72e` (E2 step 8) |
+| Run | 2026-09-29 07:53 to about 2026-10-15 17:46: about 16 d 10 h | 2026-10-06 10:10 to the last report, 2026-10-22 10:11: 16 d |
+| Ended by | `boot #16`, `verdict=watchdog` (below) | Still running |
+| Free memory | 146,352 flat; 146,128 from 12 d 12 h, flat after | 146,304 flat from 1 d; 146,080 from 12 d 12 h, flat after |
+| Flash writes | 22 to 54: one per 12 hours | 91 to 122: one per 12 hours |
+| Heartbeat time creep | About 2.4 s a day | About 2.3 s a day |
+| Rings | 24, all delivered; none queued, none dropped | None (no stimulus) |
+| Network | No reconnects; -37 to -46 dBm | No reconnects; -44 to -60 dBm |
+
+**The 224-byte step at about 12 d 10 h is the 2^30 ms crossing, not a leak.** Both units lost
+exactly 224 bytes between the 12 d 6 h and 12 d 12 h heartbeats, on different boards and
+different builds, and both stayed flat afterwards (production for 3 d 18 h, the bench for
+3 d 12 h). 2^30 ms is 12 d 10 h 15 m 42 s. At that instant `ticks_ms()` wraps to 0, and
+`uptimeMs`, the one millisecond accumulator in the firmware, passes the largest integer
+MicroPython stores without allocating (2^30 minus 1 on rp2) and becomes a heap integer. The
+wrap is harmless: every stored tick is compared through `ticks_diff` and refreshed far inside
+its 2^29 ms range, and the bench ran 3.5 days past it. The heap integer costs a permanent
+allocation and a little garbage on every pass. Agreed fix: count uptime in seconds, which
+stays a small integer for about 34 years.
+
+**`boot #16`: the watchdog fault recurred.** `verdict=watchdog chip(stale)=RUN
+raw=0x00010000 warm (cause=WDT_RESET wdt=0x1)`. The `RUN` bits are `boot #15`'s, correctly
+marked stale: a watchdog reset does not update `CHIP_RESET`. The first heartbeat (6 h 0 m at
+23:46:38) puts the boot at about 17:46 UTC (19:46 CEST) on 2026-10-15, at about 16 d 9 h 53 m
+of uptime on `boot #15`, 33 minutes after two rings (17:13:03 and 17:13:09) that were both
+delivered. The RAM log went with the reset, so what stalled is unknown. It is the second
+watchdog bite on production, after `boot #6`, about five weeks apart. The known exposure fits:
+the request timeout applies per socket operation, so a slow lookup, connect and read together
+can outlast the 8 s watchdog, and `getaddrinfo` can block outside any timeout (see the note in
+`net.py`). A supply event would read `run-pin` or `power`, not `watchdog`. `boot #16` has run
+clean since: 6 d 18 h at the last report (2026-10-22 11:46).
+
+**No `run-pin` reset in the whole period**, Sep 29 to Oct 22, about 23 days across both
+boots. What was switched on the strip in that time is not recorded.
+
 ### Transient sources
 
 Every transient ever logged reads **0 ms**: a sub-millisecond glitch, never a partial pulse,
@@ -201,9 +245,13 @@ and the pulse judging rejected every one.
   (`boot #6`, `boot #8`) sat 5 to 8 s after a ring, as a human answering would. The strike is a
   solenoid, and it seems to fire only during a call. It is probabilistic: 2 transients from 9
   tested ring events on `boot #15`.
-- **At least one other source exists**: `boot #7` logged transients with no ring nearby, and
-  transients have outnumbered rings. The quiet-strip control showed none outside ring windows,
-  so switching events on the strip are the likely second source.
+- **At least one other source exists**: `boot #7` logged transients with no ring nearby. The
+  first week of `boot #15` (to Oct 5) showed none outside ring windows; then nine 6-hour
+  heartbeat windows with no ring each gained one: 03:53 to 09:53 CEST on Oct 6, 7, 11 and 14;
+  09:53 to 15:53 CEST on Oct 8, 9 and 10; 15:53 to 21:53 CEST on Oct 9; and on `boot #16`,
+  07:46 to 13:46 CEST on Oct 16. None caused a reset or an alert. They have not been lined up
+  with activity on the strip; switching events there remain the likely source. Totals: 19
+  transients against 24 rings on `boot #15`, 4 against 7 on `boot #16` to Oct 22.
 
 This is the forum case's first problem too (spurious pulses on long leads from the same
 switching events); here the optocoupler and the pulse judging already contain it.
@@ -296,9 +344,12 @@ guard: any exception during parsing leaks the socket. This is the classic MicroP
 `urequests` slow death: works for days, then `ENOMEM`. The existing `MemoryError` recovery
 path (disconnect WiFi, sleep 10 s) frees nothing.
 
-### 🧪 A6: Log lifecycle correctness (P1)
+### ✅ A6: Log lifecycle correctness (P1)
 
-> **Still unverified:** the chunking path has never met a log long enough to split. The bench log has not passed 4096 characters since it landed. On production since `da1b281` (2026-09-28), still waiting on a long log there.
+Verified on production on 2026-10-05: a full 120-line log went out as two messages. The bench
+showed the same split on 2026-10-18, and its free memory afterwards confirmed the log cleared
+after the full send.
+
 Three defects, one fix:
 
 1. Clear the log after a **confirmed successful send**, not only on overflow. Today
@@ -811,16 +862,16 @@ instructions. It should become *"edit `config.py`."*
 > a ring and a glitch, `/status` and `/log`, a short WiFi outage), then mark it done.
 
 **Bench results on the step 8 tree (`cc9d72e`, Oct 2026).** The E2 bench plan passed except
-test 5.2, which found A10, a gap that predates the split. The 3-day soak that followed (boot
-#50) passed outright:
+test 5.2, which found A10, a gap that predates the split. The soak that followed (boot #50,
+3 days planned, 16 run) passed outright:
 
 | Measure | Result |
 | --- | --- |
-| Uptime | 3 days, no reboots |
-| Free memory at heartbeat | 146,416 bytes to 18 h, then 146,304 bytes flat for two days: one settling step, no leak |
-| Flash writes | 91 to 96, exactly one per 12 hours of uptime, matching the wear model |
+| Uptime | 16 days, no reboots |
+| Free memory at heartbeat | 146,416 bytes to 18 h, then 146,304 bytes flat; 146,080 from 12 d 12 h (the 2^30 ms crossing, see *The long soak*), flat after. Two steps, no leak |
+| Flash writes | 91 to 122, exactly one per 12 hours of uptime, matching the wear model |
 | Cost of the split | Production's pre-E2 build (`da1b281`) reads ~146,352 bytes at heartbeat; the E2 tree reads within about 60 bytes of that. Different boards and log contents, so approximate, but a real cost would show in kilobytes and does not. `.mpy` is not needed for heap; it would still save flash and import time |
-| Cost of the full log | About 8.3 KB: 154,608 bytes at 7 minutes against 146,304 at heartbeat |
+| Cost of the full log | About 8.1 KB: 154,448 bytes at 7 minutes against 146,304 at heartbeat |
 
 `main.py` was **1720 lines**, up from 209 at the start of this work. It was P2 when the file
 was small enough that the cost of leaving it alone was theoretical. It no longer is.
@@ -1438,11 +1489,11 @@ rather than left as a trap for anyone reading top to bottom.
 
 ✅ `D1` → ✅ `A5` → ✅ `A3` → ✅ `I2` → ✅ `B3` → ✅ `C4` → ✅ `C5` →
 ✅ `A9` → ✅ `B1` → ✅ `B2` → ✅ `B4` → ✅ `B6` → ✅ `B8` →
-🧪 `A6` → 🧪 `A7` → ✅ `C3`
+✅ `A6` → 🧪 `A7` → ✅ `C3`
 
-All of Phase 1 runs on production since the promotion of `da1b281` (2026-09-28). `A6` and
-`A7` are on production too, but still waiting on the conditions that would exercise them (a
-log long enough to split, a backlog to discard); each says so.
+All of Phase 1 runs on production since the promotion of `da1b281` (2026-09-28). `A7` is on
+production too, but still waiting on the condition that would exercise it (a backlog to
+discard); its entry says so.
 
 Five items were pulled forward from later phases by bench findings rather than plan:
 

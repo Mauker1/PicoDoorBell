@@ -149,3 +149,7 @@ handoff.md
 # Claude Code per-machine settings (permissions, model). Local by design: the
 # file exists to restrict what an agent may run on this checkout.
 .claude/settings.local.json
+
+# Files retired by an agent instead of deleted (see the working rules). Kept
+# out of git and out of the gate until Mauricio empties it.
+/_trash/
