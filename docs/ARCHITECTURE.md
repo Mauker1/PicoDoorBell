@@ -760,6 +760,12 @@ included only when non-zero, so an ordinary report stays short.
 is summed from per-pass differences instead. That is wrap-safe for as long as the
 device runs.
 
+It is counted in whole seconds (`uptimeSeconds`), with the part below a second carried
+to the next pass (`uptimeCarryMs`), so nothing drifts. A millisecond total would pass
+2^30 at the same 12.4 days and stop being a small integer: MicroPython then keeps it
+on the heap, which both units showed as a permanent 224-byte step in free memory
+(`A12`). Seconds stay small for about 34 years.
+
 ### Delivery
 
 Routed through `pendingAnnouncement`, so a failed heartbeat is retried rather

@@ -53,7 +53,7 @@ os.chdir(tempfile.mkdtemp())
 
 # --- 1. The report carries what only uptime can show -----------------------
 m = fresh()
-m.uptimeMs = 90061000            # 1d 1h 1m
+m.uptimeSeconds = 90061          # 1d 1h 1m
 text = m.heartbeat_text()
 
 check('it says it is alive', 'Still here.' in text, True)
@@ -66,9 +66,21 @@ check('flash writes are included', 'Flash writes:' in text, True)
 check('it fits one Telegram message', len(text) <= 4096, True)
 
 # --- 2. Uptime formatting ---------------------------------------------------
-check('minutes only under an hour', m.format_uptime(600000), '10m')
-check('hours and minutes under a day', m.format_uptime(7260000), '2h 1m')
-check('days once past one', m.format_uptime(180000000), '2d 2h 0m')
+check('minutes only under an hour', m.format_uptime(600), '10m')
+check('hours and minutes under a day', m.format_uptime(7260), '2h 1m')
+check('days once past one', m.format_uptime(180000), '2d 2h 0m')
+
+# The clock line is format_uptime's other caller, with a ticks difference in
+# milliseconds. A12 changed the unit; a missed conversion would read
+# '(synced 3d 11h 20m ago)' five minutes after a sync.
+m = fresh()
+savedEpoch = stubs.Ntptime.next_epoch
+stubs.Ntptime.next_epoch = 770558400   # 2024-06-01 12:00:00 UTC, 2000 epoch
+m.timesync.sync_clock()
+stubs.Ntptime.next_epoch = savedEpoch
+clock[0] += 300000
+check('the clock line counts minutes since the sync',
+      '(synced 5m ago)' in m.clock_status(), True)
 
 # --- 3. It fires on schedule, not before ------------------------------------
 m = fresh()

@@ -124,7 +124,14 @@ lastHeartbeat = 0
 # Accumulated rather than derived from ticks_ms, which wraps at ~12.4 days and
 # is ambiguous past half of that. Summing per-pass differences is wrap-safe
 # for as long as the device runs.
-uptimeMs = 0
+#
+# Counted in whole seconds, with the part below one second carried to the next
+# pass so nothing drifts (A12). A millisecond total passes 2**30 at the same
+# ~12.4 days and stops being a small int: MicroPython then allocates it on the
+# heap, which both units showed as a permanent 224-byte step in free memory.
+# Seconds stay a small int for about 34 years.
+uptimeSeconds = 0
+uptimeCarryMs = 0
 
 # Time variables
 startupTime = time.ticks_ms()
@@ -217,12 +224,11 @@ def clock_status():
     """
     if not clockmod.clock_is_live():
         return 'unsynced (using relative time)'
-    since = time.ticks_diff(time.ticks_ms(), timesync.lastNtpSync)
+    since = time.ticks_diff(time.ticks_ms(), timesync.lastNtpSync) // 1000
     return clockmod.format_timestamp(clockmod.clock_now(), utcOffset) + \
         ' (synced ' + format_uptime(since) + ' ago)'
 
-def format_uptime(ms):
-    seconds = ms // 1000
+def format_uptime(seconds):
     days = seconds // 86400
     hours = (seconds % 86400) // 3600
     minutes = (seconds % 3600) // 60
@@ -243,7 +249,7 @@ def heartbeat_text():
     gc.collect()
     lines = [
         'Still here.',
-        'Uptime: ' + format_uptime(uptimeMs),
+        'Uptime: ' + format_uptime(uptimeSeconds),
         'Boot: #' + str(bootNumber if bootNumber is not None else '?') +
         ' (' + resets.reset_verdict(resetInfo) + ')',
         'Free memory: ' + str(gc.mem_free()) + ' bytes',
@@ -452,12 +458,13 @@ def run_pass():
     """One main-loop pass: network upkeep, inputs, delivery, housekeeping.
 
     A function rather than inline loop code, so its state is explicit: the
-    four loop globals below are declared, not implicit module-scope
+    five loop globals below are declared, not implicit module-scope
     assignments that would silently become locals the day this moved. It
     raises on error; run() decides recovery. A future battery build (G5) can
     drive this from a sleep-and-wake loop instead of run().
     """
-    global lastLogCheck, prevPassTicks, lastPassTicks, uptimeMs
+    global lastLogCheck, prevPassTicks, lastPassTicks
+    global uptimeSeconds, uptimeCarryMs
     if (not net.is_wifi_connected()):
         net.connect_wifi()
         announce_startup()
@@ -486,7 +493,9 @@ def run_pass():
     # covered.
     prevPassTicks = lastPassTicks
     lastPassTicks = time.ticks_ms()
-    uptimeMs += time.ticks_diff(lastPassTicks, prevPassTicks)
+    uptimeCarryMs += time.ticks_diff(lastPassTicks, prevPassTicks)
+    uptimeSeconds += uptimeCarryMs // 1000
+    uptimeCarryMs %= 1000
     timesync.maybe_resync_clock()
     maybe_heartbeat()
 

@@ -150,21 +150,36 @@ check('every request was closed',
       events.count('http_close'), events.count('http_post') + events.count('http_get'))
 
 # --- 7. One loop pass updates the loop's own state ---------------------------
-# The loop is run_pass(), a function, so its four loop globals must be
+# The loop is run_pass(), a function, so its five loop globals must be
 # declared. Drop one from the global line and its assignment becomes a local:
 # the module value stops moving, and these catch it. Two passes, the second
-# past the message-check interval, so every one of the four has to move.
+# past the message-check interval, so every one of the five has to move.
 m = load_and_boot()
 stubs.clock[0] += 1000
 m.run_pass()
 first = m.lastPassTicks
-uptime_after_first = m.uptimeMs
+uptime_after_first = m.uptimeSeconds
 stubs.clock[0] += m.config.logCheckInterval + 1000
 m.run_pass()
 check('a pass records when it ran', m.lastPassTicks, stubs.clock[0])
 check('and keeps the previous pass for the window', m.prevPassTicks, first)
-check('and accumulates uptime', m.uptimeMs > uptime_after_first, True)
+check('and accumulates uptime', m.uptimeSeconds > uptime_after_first, True)
 check('and stamps the message check', m.lastLogCheck, stubs.clock[0])
+
+# --- 8. Uptime keeps the milliseconds it has not counted yet (A12) -----------
+# Passes run about a second apart, so whole seconds alone would drop a large
+# share of every pass. Five passes of 400 ms are exactly two seconds, and the
+# remainder carried between passes must account for every millisecond.
+m = load_and_boot()
+stubs.clock[0] += 1000
+m.run_pass()
+before = m.uptimeSeconds * 1000 + m.uptimeCarryMs
+for _ in range(5):
+    stubs.clock[0] += 400
+    m.run_pass()
+check('no millisecond is lost between passes',
+      m.uptimeSeconds * 1000 + m.uptimeCarryMs - before, 2000)
+check('the carry stays below one second', m.uptimeCarryMs < 1000, True)
 
 print()
 print('%d/%d passed' % (sum(results), len(results)))

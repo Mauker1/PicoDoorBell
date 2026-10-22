@@ -471,7 +471,9 @@ Fix (agreed): count uptime in whole seconds, carrying the millisecond remainder 
 so nothing drifts. A small integer then lasts about 34 years. `format_uptime()` and the tests
 that read `uptimeMs` follow.
 
-A fix, so its own commit with tests; planned for the 1.0.0 bench build.
+A fix, so its own commit with tests. Code complete on `dev`; ships in the 1.0.0-1 bench
+build. Host tests prove the arithmetic but cannot see MicroPython's small-integer limit, so
+verification is a bench boot past 12 d 12 h with no step in free memory.
 
 ---
 
